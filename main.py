@@ -1,6 +1,6 @@
 """
 ZCT Scanner — Zero Complexity Trading
-Monitoriza niveles clave en Binance Futuros y alerta por Telegram
+Monitoriza niveles clave en futuros perpetuos (Bybit) y alerta por Telegram
 cuando el precio se aproxima a un nivel con condiciones favorables.
 
 Autor: generado con Claude para Curro / Tradetor
@@ -22,7 +22,7 @@ SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'HYPEUSDT',
     'DOGEUSDT', 'BNBUSDT', 'TONUSDT', 'LINKUSDT',
     'TAOUSDT', 'AVAXUSDT',
-    # OKB no tiene futuros perpetuos en Binance — se descarta automáticamente
+    # OKB no tiene futuros perpetuos en Bybit — se descarta automáticamente
     # Si quieres añadir más: 'XRPUSDT', 'ADAUSDT', etc.
 ]
 
@@ -43,42 +43,62 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
-# BINANCE API
+# BYBIT API (sin restricciones geográficas)
 # ─────────────────────────────────────────────
-BINANCE_BASE = 'https://fapi.binance.com'
+BYBIT_BASE = 'https://api.bybit.com'
+
+# Mapa de intervalos: formato interno → formato Bybit
+INTERVAL_MAP = {
+    '1m': '1',
+    '1h': '60',
+    '4h': '240',
+    '1d': 'D',
+}
 
 def get_klines(symbol, interval, limit=200):
     """Devuelve lista de velas como dicts {open, high, low, close, volume}."""
+    bybit_interval = INTERVAL_MAP.get(interval, interval)
     try:
         r = requests.get(
-            f'{BINANCE_BASE}/fapi/v1/klines',
-            params={'symbol': symbol, 'interval': interval, 'limit': limit},
+            f'{BYBIT_BASE}/v5/market/kline',
+            params={
+                'category': 'linear',
+                'symbol':   symbol,
+                'interval': bybit_interval,
+                'limit':    limit,
+            },
             timeout=10
         )
         r.raise_for_status()
-        return [
-            {
+        data = r.json()
+        # Bybit devuelve las velas en orden inverso (más reciente primero)
+        candles = []
+        for d in reversed(data['result']['list']):
+            candles.append({
                 'open':   float(d[1]),
                 'high':   float(d[2]),
                 'low':    float(d[3]),
                 'close':  float(d[4]),
                 'volume': float(d[5]),
-            }
-            for d in r.json()
-        ]
+            })
+        return candles
     except Exception as e:
         log.error(f'{symbol} {interval}: {e}')
         return []
 
 def validate_symbols(symbols):
-    """Filtra los símbolos que realmente existen en Binance Futuros."""
+    """Filtra los símbolos que realmente existen en Bybit Futuros (linear)."""
     try:
-        r = requests.get(f'{BINANCE_BASE}/fapi/v1/exchangeInfo', timeout=15)
-        valid = {s['symbol'] for s in r.json()['symbols']}
+        r = requests.get(
+            f'{BYBIT_BASE}/v5/market/instruments-info',
+            params={'category': 'linear'},
+            timeout=15
+        )
+        valid = {s['symbol'] for s in r.json()['result']['list']}
         ok   = [s for s in symbols if s in valid]
         skip = [s for s in symbols if s not in valid]
         if skip:
-            log.warning(f'No disponibles en Binance Futuros (se ignoran): {skip}')
+            log.warning(f'No disponibles en Bybit Futuros (se ignoran): {skip}')
         return ok
     except Exception as e:
         log.error(f'Error validando símbolos: {e}')
