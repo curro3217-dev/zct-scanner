@@ -12,18 +12,18 @@ import requests
 from datetime import datetime, timezone
 import os
 
-# ─────────────────────────────────────────────
+# ────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 SYMBOLS = [
-    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'HYPEUSDT',
-    'DOGEUSDT', 'BNBUSDT', 'TONUSDT', 'LINKUSDT',
-    'TAOUSDT', 'AVAXUSDT',
-    # OKB no tiene futuros perpetuos en Bybit — se descarta automáticamente
-    # Si quieres añadir más: 'XRPUSDT', 'ADAUSDT', etc.
+    'BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'HYPE_USDT',
+    'DOGE_USDT', 'BNB_USDT', 'TON_USDT', 'LINK_USDT',
+    'TAO_USDT', 'AVAX_USDT',
+    # MEXC usa formato SYMBOL_USDT — los que no existen se filtran automáticamente
+    # Si quieres añadir más: 'XRP_USDT', 'ADA_USDT', etc.
 ]
 
 SMMA_LENGTH      = 30       # Longitud de la Smoothed MA (ZCT)
@@ -44,43 +44,39 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
-# BYBIT API (sin restricciones geográficas)
+# MEXC API (sin restricciones geográficas)
 # ─────────────────────────────────────────────
-BYBIT_BASE = 'https://api.bybit.com'
+MEXC_BASE = 'https://contract.mexc.com'
 
-# Mapa de intervalos: formato interno → formato Bybit
+# Mapa de intervalos: formato interno → formato MEXC
 INTERVAL_MAP = {
-    '1m': '1',
-    '1h': '60',
-    '4h': '240',
-    '1d': 'D',
+    '1m': 'Min1',
+    '1h': 'Hour1',
+    '4h': 'Hour4',
+    '1d': 'Day1',
 }
 
 def get_klines(symbol, interval, limit=200):
     """Devuelve lista de velas como dicts {open, high, low, close, volume}."""
-    bybit_interval = INTERVAL_MAP.get(interval, interval)
+    mexc_interval = INTERVAL_MAP.get(interval, interval)
     try:
         r = requests.get(
-            f'{BYBIT_BASE}/v5/market/kline',
-            params={
-                'category': 'linear',
-                'symbol':   symbol,
-                'interval': bybit_interval,
-                'limit':    limit,
-            },
+            f'{MEXC_BASE}/api/v1/contract/kline/{symbol}',
+            params={'interval': mexc_interval, 'limit': limit},
             timeout=10
         )
         r.raise_for_status()
         data = r.json()
-        # Bybit devuelve las velas en orden inverso (más reciente primero)
+        # MEXC devuelve listas paralelas de arrays
         candles = []
-        for d in reversed(data['result']['list']):
+        d = data['data']
+        for i in range(len(d['time'])):
             candles.append({
-                'open':   float(d[1]),
-                'high':   float(d[2]),
-                'low':    float(d[3]),
-                'close':  float(d[4]),
-                'volume': float(d[5]),
+                'open':   float(d['open'][i]),
+                'high':   float(d['high'][i]),
+                'low':    float(d['low'][i]),
+                'close':  float(d['close'][i]),
+                'volume': float(d['vol'][i]),
             })
         return candles
     except Exception as e:
@@ -88,18 +84,17 @@ def get_klines(symbol, interval, limit=200):
         return []
 
 def validate_symbols(symbols):
-    """Filtra los símbolos que realmente existen en Bybit Futuros (linear)."""
+    """Filtra los símbolos que realmente existen en MEXC Futuros."""
     try:
         r = requests.get(
-            f'{BYBIT_BASE}/v5/market/instruments-info',
-            params={'category': 'linear'},
+            f'{MEXC_BASE}/api/v1/contract/detail',
             timeout=15
         )
-        valid = {s['symbol'] for s in r.json()['result']['list']}
+        valid = {s['symbol'] for s in r.json()['data']}
         ok   = [s for s in symbols if s in valid]
         skip = [s for s in symbols if s not in valid]
         if skip:
-            log.warning(f'No disponibles en Bybit Futuros (se ignoran): {skip}')
+            log.warning(f'No disponibles en MEXC Futuros (se ignoran): {skip}')
         return ok
     except Exception as e:
         log.error(f'Error validando símbolos: {e}')
