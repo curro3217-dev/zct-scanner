@@ -246,6 +246,10 @@ def build_alert(symbol, price, lvl_name, lvl_price, dist_pct,
     fmt     = lambda p: f'{p:,.4f}' if p >= 1 else f'{p:.6f}'
     dir_txt = '🔴 SHORT' if trade_dir == 'SHORT' else '🟢 LONG'
 
+    # Link directo a TradingView (AVAX_USDT → BINANCE:AVAXUSDT)
+    tv_sym  = 'BINANCE:' + symbol.replace('_', '')
+    tv_link = f'https://www.tradingview.com/chart/?symbol={tv_sym}&interval=1'
+
     return (
         f'🔔 <b>{symbol}</b> — Nivel ZCT próximo\n\n'
         f'📍 <b>Nivel:</b> {lvl_name} @ {fmt(lvl_price)}\n'
@@ -259,6 +263,7 @@ def build_alert(symbol, price, lvl_name, lvl_price, dist_pct,
         f'📥 Entry: {fmt(entry)}\n'
         f'🛑 SL:    {fmt(sl)}\n'
         f'🎯 TP:    {fmt(tp)}\n'
+        f'\n🔗 <a href="{tv_link}">Ver en TradingView</a>\n'
         f'⏰ {datetime.now(timezone.utc).strftime("%H:%M UTC")}'
     )
 # ─────────────────────────────────────────────
