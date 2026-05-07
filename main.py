@@ -224,52 +224,27 @@ def build_alert(symbol, price, lvl_name, lvl_price, dist_pct,
     dir_es    = {'trending_up': 'Alcista', 'trending_down': 'Bajista', 'sideways': 'Lateral'}.get(direction, '?')
 
     vol_ratio = (vcurrent / vma * 100) if vma else 0
-    if   vol_ratio > 115: vol_txt = '📈 Creciente'
-    elif vol_ratio < 85:  vol_txt = '📉 Decreciente'
-    else:                 vol_txt = '➡️ Plano'
+    vol_txt   = '📈 Creciente' if vol_ratio > 115 else ('📉 Decreciente' if vol_ratio < 85 else '➡️ Plano')
 
-    # Mejor setup disponible
-    if   mom == 'IDEAL':    setup = '🚀 MOMENTUM — IDEAL';   best = 'mom'
-    elif mr  == 'IDEAL':    setup = '🔄 MEAN REVERSION — IDEAL';  best = 'mr'
-    elif mom == 'AVERAGE':  setup = '🚀 MOMENTUM — AVERAGE'; best = 'mom'
-    elif mr  == 'AVERAGE':  setup = '🔄 MEAN REVERSION — AVERAGE'; best = 'mr'
-    else:                   setup = '⚠️ Condiciones POOR';   best = 'none'
-
-    # Dirección: niveles H = resistencia, L = soporte
-    is_high = lvl_name.endswith('H')
-    if best == 'mr':
-        trade_dir = 'SHORT' if is_high else 'LONG'
-    elif best == 'mom':
+    # Solo llegan señales IDEAL confirmadas por volumen
+    if mom == 'IDEAL':
+        setup = '🚀 MOMENTUM — IDEAL'
+        is_high = lvl_name.endswith('H')
         trade_dir = 'LONG' if is_high else 'SHORT'
     else:
-        trade_dir = None
+        setup = '🔄 MEAN REVERSION — IDEAL'
+        is_high = lvl_name.endswith('H')
+        trade_dir = 'SHORT' if is_high else 'LONG'
 
-    # Entry / SL / TP  (SL = 1.2% fijo, TP = 1R)
+    # Entry / SL / TP  (SL 1.2%, TP = 1R)
     SL_PCT   = 0.012
     LEVERAGE = 5
     entry = price
-    if trade_dir == 'SHORT':
-        sl = entry * (1 + SL_PCT)
-        tp = entry * (1 - SL_PCT)
-    elif trade_dir == 'LONG':
-        sl = entry * (1 - SL_PCT)
-        tp = entry * (1 + SL_PCT)
-    else:
-        sl = tp = None
+    sl    = entry * (1 + SL_PCT) if trade_dir == 'SHORT' else entry * (1 - SL_PCT)
+    tp    = entry * (1 - SL_PCT) if trade_dir == 'SHORT' else entry * (1 + SL_PCT)
 
-    fmt = lambda p: f'{p:,.4f}' if p >= 1 else f'{p:.6f}'
-
-    if trade_dir and sl:
-        dir_txt   = '🔴 SHORT' if trade_dir == 'SHORT' else '🟢 LONG'
-        trade_blk = (
-            f'\n─────────────────\n'
-            f'<b>{dir_txt}  ·  x{LEVERAGE} (demo)</b>\n'
-            f'📥 Entry: {fmt(entry)}\n'
-            f'🛑 SL:    {fmt(sl)}\n'
-            f'🎯 TP:    {fmt(tp)}\n'
-        )
-    else:
-        trade_blk = ''
+    fmt     = lambda p: f'{p:,.4f}' if p >= 1 else f'{p:.6f}'
+    dir_txt = '🔴 SHORT' if trade_dir == 'SHORT' else '🟢 LONG'
 
     return (
         f'🔔 <b>{symbol}</b> — Nivel ZCT próximo\n\n'
@@ -278,8 +253,12 @@ def build_alert(symbol, price, lvl_name, lvl_price, dist_pct,
         f'{setup}\n'
         f'{dir_emoji} <b>30SMMA:</b> {dir_es}\n'
         f'🔁 <b>Cruces (50 velas 1m):</b> {crosses}\n'
-        f'📊 <b>Volumen:</b> {vol_txt} ({vol_ratio:.0f}% de su MA)'
-        f'{trade_blk}\n'
+        f'📊 <b>Volumen:</b> {vol_txt} ({vol_ratio:.0f}% de su MA)\n'
+        f'\n─────────────────\n'
+        f'<b>{dir_txt}  ·  x{LEVERAGE} (demo)</b>\n'
+        f'📥 Entry: {fmt(entry)}\n'
+        f'🛑 SL:    {fmt(sl)}\n'
+        f'🎯 TP:    {fmt(tp)}\n'
         f'⏰ {datetime.now(timezone.utc).strftime("%H:%M UTC")}'
     )
 # ─────────────────────────────────────────────
@@ -324,10 +303,15 @@ def scan(symbol):
     direction = get_ma_direction(smma_vals)
     mom, mr   = classify(crosses, direction)
 
-    log.info(f'{symbol}: precio={price:.4f} cruces={crosses} dir={direction} mom={mom} mr={mr}')
+    vol_ratio = (vcurrent / vma * 100) if vma else 0
 
-    # Si ambas condiciones son POOR, no hay nada que alertar
-    if mom == 'POOR' and mr == 'POOR':
+    # Solo señales IDEAL con volumen confirmado (ZCT quality filter)
+    mr_ideal  = (mr  == 'IDEAL' and 85 <= vol_ratio <= 115)
+    mom_ideal = (mom == 'IDEAL' and vol_ratio > 115)
+
+    log.info(f'{symbol}: precio={price:.4f} cruces={crosses} dir={direction} mom={mom} mr={mr} vol={vol_ratio:.0f}%')
+
+    if not mr_ideal and not mom_ideal:
         return
 
     # 3. Niveles ZCT y proximidad
