@@ -31,7 +31,8 @@ VOLUSD_MA_LEN    = 60       # Periodos para la MA del VolUSD
 VOLUSD_MIN       = 100_000  # VolUSD mínimo ($100K) — filtro de liquidez ZCT
 PROXIMITY_PCT    = 0.005    # Distancia al nivel para activar alerta (0.5%)
 ALERT_COOLDOWN_S = 3600     # Cooldown entre alertas del mismo símbolo+nivel (1h)
-SCAN_INTERVAL_S  = 60       # Segundos entre escaneos completos
+SCAN_INTERVAL_S  = 60       # Segundos entre escaneos completos (solo en modo continuo)
+SCAN_ONCE        = os.environ.get('SCAN_ONCE', '0') == '1'  # True en GitHub Actions
 
 # ─────────────────────────────────────────────
 # LOGGING
@@ -322,13 +323,15 @@ def main():
     active = validate_symbols(SYMBOLS)
     log.info(f'Símbolos activos: {active}')
 
-    send_telegram(
-        '🟢 <b>ZCT Scanner iniciado</b>\n'
-        f'📊 Monitorizando: {", ".join(active)}\n'
-        f'⏱ Intervalo: {SCAN_INTERVAL_S}s\n'
-        f'📍 Proximidad a nivel: {PROXIMITY_PCT * 100:.1f}%\n'
-        f'🔕 Cooldown entre alertas: {ALERT_COOLDOWN_S // 60} min'
-    )
+    # Mensaje de inicio solo en modo continuo (no en GitHub Actions)
+    if not SCAN_ONCE:
+        send_telegram(
+            '🟢 <b>ZCT Scanner iniciado</b>\n'
+            f'📊 Monitorizando: {", ".join(active)}\n'
+            f'⏱ Intervalo: {SCAN_INTERVAL_S}s\n'
+            f'📍 Proximidad a nivel: {PROXIMITY_PCT * 100:.1f}%\n'
+            f'🔕 Cooldown entre alertas: {ALERT_COOLDOWN_S // 60} min'
+        )
 
     while True:
         log.info(f'--- Escaneo ({len(active)} símbolos) ---')
@@ -338,6 +341,10 @@ def main():
             except Exception as e:
                 log.error(f'Error en {symbol}: {e}')
             time.sleep(2)  # pausa entre símbolos para respetar rate limits
+
+        if SCAN_ONCE:
+            log.info('Escaneo único completado (modo GitHub Actions).')
+            break
 
         log.info(f'Escaneo completo. Próximo en {SCAN_INTERVAL_S}s.')
         time.sleep(SCAN_INTERVAL_S)
