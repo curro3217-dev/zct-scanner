@@ -20,7 +20,7 @@ TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 SYMBOLS = [
     'BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'HYPE_USDT',
-    'DOGE_USDT', 'BNB_USDT', 'TON_USDT', 'LINK_USDT',
+    'DOGE_USDT', 'BNB_USDT', 'XRP_USDT', 'LINK_USDT',  # TON no disponible en MEXC, reemplazado por XRP
     'TAO_USDT', 'AVAX_USDT',
     # MEXC usa formato SYMBOL_USDT — los que no existen se filtran automáticamente
     # Si quieres añadir más: 'XRP_USDT', 'ADA_USDT', etc.
@@ -51,7 +51,7 @@ MEXC_BASE = 'https://contract.mexc.com'
 # Mapa de intervalos: formato interno → formato MEXC
 INTERVAL_MAP = {
     '1m': 'Min1',
-    '1h': 'Hour1',
+    '1h': 'Min60',  # MEXC usa Min60 para velas de 1h (no Hour1)
     '4h': 'Hour4',
     '1d': 'Day1',
 }
