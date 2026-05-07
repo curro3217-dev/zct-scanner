@@ -229,13 +229,47 @@ def build_alert(symbol, price, lvl_name, lvl_price, dist_pct,
     else:                 vol_txt = '➡️ Plano'
 
     # Mejor setup disponible
-    if   mom == 'IDEAL':    setup = '🚀 MOMENTUM — IDEAL'
-    elif mr  == 'IDEAL':    setup = '🔄 MEAN REVERSION — IDEAL'
-    elif mom == 'AVERAGE':  setup = '🚀 MOMENTUM — AVERAGE'
-    elif mr  == 'AVERAGE':  setup = '🔄 MEAN REVERSION — AVERAGE'
-    else:                   setup = '⚠️ Condiciones POOR'
+    if   mom == 'IDEAL':    setup = '🚀 MOMENTUM — IDEAL';   best = 'mom'
+    elif mr  == 'IDEAL':    setup = '🔄 MEAN REVERSION — IDEAL';  best = 'mr'
+    elif mom == 'AVERAGE':  setup = '🚀 MOMENTUM — AVERAGE'; best = 'mom'
+    elif mr  == 'AVERAGE':  setup = '🔄 MEAN REVERSION — AVERAGE'; best = 'mr'
+    else:                   setup = '⚠️ Condiciones POOR';   best = 'none'
 
-    fmt = lambda p: f'{p:,.2f}' if p >= 1 else f'{p:.6f}'
+    # Dirección: niveles H = resistencia, L = soporte
+    is_high = lvl_name.endswith('H')
+    if best == 'mr':
+        trade_dir = 'SHORT' if is_high else 'LONG'
+    elif best == 'mom':
+        trade_dir = 'LONG' if is_high else 'SHORT'
+    else:
+        trade_dir = None
+
+    # Entry / SL / TP  (SL = 1.2% fijo, TP = 1R)
+    SL_PCT   = 0.012
+    LEVERAGE = 5
+    entry = price
+    if trade_dir == 'SHORT':
+        sl = entry * (1 + SL_PCT)
+        tp = entry * (1 - SL_PCT)
+    elif trade_dir == 'LONG':
+        sl = entry * (1 - SL_PCT)
+        tp = entry * (1 + SL_PCT)
+    else:
+        sl = tp = None
+
+    fmt = lambda p: f'{p:,.4f}' if p >= 1 else f'{p:.6f}'
+
+    if trade_dir and sl:
+        dir_txt   = '🔴 SHORT' if trade_dir == 'SHORT' else '🟢 LONG'
+        trade_blk = (
+            f'\n─────────────────\n'
+            f'<b>{dir_txt}  ·  x{LEVERAGE} (demo)</b>\n'
+            f'📥 Entry: {fmt(entry)}\n'
+            f'🛑 SL:    {fmt(sl)}\n'
+            f'🎯 TP:    {fmt(tp)}\n'
+        )
+    else:
+        trade_blk = ''
 
     return (
         f'🔔 <b>{symbol}</b> — Nivel ZCT próximo\n\n'
@@ -244,10 +278,10 @@ def build_alert(symbol, price, lvl_name, lvl_price, dist_pct,
         f'{setup}\n'
         f'{dir_emoji} <b>30SMMA:</b> {dir_es}\n'
         f'🔁 <b>Cruces (50 velas 1m):</b> {crosses}\n'
-        f'📊 <b>Volumen:</b> {vol_txt} ({vol_ratio:.0f}% de su MA)\n\n'
+        f'📊 <b>Volumen:</b> {vol_txt} ({vol_ratio:.0f}% de su MA)'
+        f'{trade_blk}\n'
         f'⏰ {datetime.now(timezone.utc).strftime("%H:%M UTC")}'
     )
-
 # ─────────────────────────────────────────────
 # COOLDOWN (evita spam de alertas)
 # ─────────────────────────────────────────────
