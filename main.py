@@ -248,7 +248,7 @@ def build_alert(symbol, price, lvl_name, lvl_price, dist_pct,
 
     # Link directo a TradingView (AVAX_USDT → BINANCE:AVAXUSDT)
     tv_sym  = 'BINANCE:' + symbol.replace('_', '')
-    tv_link = f'https://www.tradingview.com/chart/?symbol={tv_sym}&interval=1'
+    tv_link = f'https://www.tradingview.com/chart/?symbol={tv_sym}&interval=240'
 
     return (
         f'🔔 <b>{symbol}</b> — Nivel ZCT próximo\n\n'
