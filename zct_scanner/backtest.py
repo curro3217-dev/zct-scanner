@@ -10,7 +10,7 @@ Uso: python backtest.py
 Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (env vars)
 """
 
-import os, time, csv, logging
+import os, time, csv, logging, html as html_mod
 from datetime import datetime, timezone
 
 import requests
@@ -406,7 +406,8 @@ def section(title: str, data: dict) -> str:
         return ''
     lines = [f'<b>{title}</b>']
     for label, (w, n, wr) in sorted(data.items(), key=lambda x: -x[1][2]):
-        lines.append(f'  {label:<18} {bar(wr)} {wr:.0f}% ({w}/{n})')
+        safe = html_mod.escape(label)
+        lines.append(f'  {safe:<18} {bar(wr)} {wr:.0f}% ({w}/{n})')
     return '\n'.join(lines)
 
 
@@ -514,7 +515,7 @@ def main():
             writer.writerows(all_results)
         log.info(f'CSV guardado: {csv_path}')
 
-    # Analisis y Telegram
+    # AnÃ¡lisis y Telegram
     analysis = analyze(all_results)
     report   = build_report(analysis, len(COINS))
     log.info('Enviando reporte...')
