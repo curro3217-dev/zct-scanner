@@ -1,0 +1,36 @@
+name: ZCT Backtest
+
+on:
+  workflow_dispatch:   # Botón manual en GitHub Actions
+  schedule:
+    - cron: '0 8 * * 1'  # Lunes a las 8:00 UTC (automático semanal)
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run backtest
+        env:
+          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python zct_scanner/backtest.py
+
+      - name: Upload CSV de resultados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results-${{ github.run_number }}
+          path: zct_scanner/backtest_results.csv
+          retention-days: 30
