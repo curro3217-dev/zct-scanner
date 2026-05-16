@@ -234,7 +234,7 @@ def simulate_outcome(direction: str, entry_price: float,
 def backtest_coin(symbol: str) -> list:
     results = []
 
-    d15m = get_klines(symbol, '15m', limit=200)
+    d15m = get_klines(symbol, '15m', limit=250)
     time.sleep(0.15)
     d1h  = get_klines(symbol, '1h',  limit=200)
     time.sleep(0.15)
@@ -514,7 +514,7 @@ def main():
             writer.writerows(all_results)
         log.info(f'CSV guardado: {csv_path}')
 
-    # AnÃ¡lisis y Telegram
+    # Analisis y Telegram
     analysis = analyze(all_results)
     report   = build_report(analysis, len(COINS))
     log.info('Enviando reporte...')
