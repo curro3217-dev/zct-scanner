@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
-ZCT Backtester — Analiza el rendimiento histórico del scanner.
+ZCT Backtester v3 — Testea dos estrategias en paralelo:
 
-Simula las señales del scanner en las últimas velas disponibles de MEXC
-y calcula qué filtros realmente funcionan (win rate por feature).
-Envía el análisis completo por Telegram.
+  BREAKOUT  : nivel como punto de ruptura. Entrada DESPUES de que el precio
+              cierre al otro lado del nivel (simula confirmacion real).
+              Filtros: crosses <= 1, vol spike >150%, MA compatible.
+
+  MR        : nivel como punto de rechazo (mean reversion). Entrada en la
+              aproximacion, direccion INVERTIDA (resistencia -> SHORT,
+              soporte -> LONG).
+              Filtros: crosses >= 5, vol plano <115%, MA lateral.
 
 Uso: python backtest.py
 Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (env vars)
@@ -19,34 +24,31 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # ══════════════════════════════════════════════════════════
-#  CONFIG (igual que el scanner)
+#  CONFIG
 # ══════════════════════════════════════════════════════════
-PROXIMITY_PCT = 0.005    # 0.5% de proximidad al nivel
-MAX_DIST_PCT  = 15.0     # nivel ignorado si está a >15% del precio
-CLUSTER_TOP   = 2.0      # distancia máxima entre 2 niveles (top coins)
-CLUSTER_ALT   = 3.0      # distancia máxima entre 2 niveles (altcoins)
-SL_PCT        = 0.02     # 2% stop loss
-TP_PCT        = SL_PCT * 3.0  # 6% = 3R
-SMMA_LEN      = 30
-VOL_MA_LEN    = 20
-CROSS_LB      = 50
-MA_DIR_LB     = 5
-MA_DIR_THR    = 0.08
-STRONG_PUMP   = 30.0
+PROXIMITY_PCT   = 0.005
+MIN_DIST_PCT    = 0.20
+SL_PCT          = 0.02
+TP_PCT          = SL_PCT * 3.0
+SMMA_LEN        = 30
+VOL_MA_LEN      = 20
+CROSS_LB        = 50
+MA_DIR_LB       = 5
+MA_DIR_THR      = 0.08
 
-# Timeframe de simulación y ventana de resultado
-SIM_INTERVAL   = '15m'   # vela base del backtest
-OUTCOME_CANDLES = 24     # velas hacia adelante para el resultado (24 * 15m = 6h)
-WARMUP_CANDLES  = SMMA_LEN + CROSS_LB + MA_DIR_LB + 5  # ~85 velas de calentamiento
-CHANGE_LB       = 96     # velas atrás para calcular el cambio 24h (96 * 15m = 24h)
+OUTCOME_CANDLES = 32
+WARMUP_CANDLES  = SMMA_LEN + CROSS_LB + MA_DIR_LB + 5
+CHANGE_LB       = 96
 
-TOP_COINS = {'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'SOL_USDT', 'XRP_USDT'}
+BKOUT_MAX_CROSSES = 1
+BKOUT_MIN_VOL     = 150
+BKOUT_MAX_WAIT    = 8
+MR_MIN_CROSSES    = 5
+MR_MAX_VOL        = 115
+MR_MA_DIRS        = {'sideways'}
 
-INTERVAL_MAP = {
-    '15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1',
-}
+INTERVAL_MAP = {'15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1'}
 
-# 30 monedas más líquidas en MEXC futuros
 COINS = [
     'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'SOL_USDT', 'XRP_USDT',
     'DOGE_USDT', 'ADA_USDT', 'AVAX_USDT', 'LINK_USDT', 'DOT_USDT',
@@ -63,7 +65,7 @@ TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 # ══════════════════════════════════════════════════════════
 #  API MEXC
 # ══════════════════════════════════════════════════════════
-def get_klines(symbol: str, interval: str, limit: int = 200) -> dict | None:
+def get_klines(symbol, interval, limit=200):
     try:
         r = requests.get(
             f'https://contract.mexc.com/api/v1/contract/kline/{symbol}',
@@ -81,9 +83,9 @@ def get_klines(symbol: str, interval: str, limit: int = 200) -> dict | None:
 
 
 # ══════════════════════════════════════════════════════════
-#  ANÁLISIS ZCT (mismo código que el scanner)
+#  ANALISIS ZCT
 # ══════════════════════════════════════════════════════════
-def calc_smma(closes: list, length: int = 30) -> list:
+def calc_smma(closes, length=30):
     if len(closes) < length:
         return []
     sma = sum(closes[:length]) / length
@@ -93,7 +95,7 @@ def calc_smma(closes: list, length: int = 30) -> list:
     return result
 
 
-def count_crosses(closes: list, ma: list, lb: int = 50) -> int:
+def count_crosses(closes, ma, lb=50):
     n = min(lb, len(closes) - 1, len(ma) - 1)
     crosses = 0
     for i in range(1, n + 1):
@@ -104,19 +106,16 @@ def count_crosses(closes: list, ma: list, lb: int = 50) -> int:
     return crosses
 
 
-def get_ma_direction(ma: list, lb: int = 5) -> str:
+def get_ma_direction(ma, lb=5):
     if len(ma) < lb + 1:
         return 'sideways'
     pct = (ma[-1] - ma[-(lb+1)]) / ma[-(lb+1)] * 100
-    if pct > MA_DIR_THR:
-        return 'up'
-    if pct < -MA_DIR_THR:
-        return 'down'
+    if pct > MA_DIR_THR:  return 'up'
+    if pct < -MA_DIR_THR: return 'down'
     return 'sideways'
 
 
-def analyze_zct_window(closes: list, amounts: list) -> dict:
-    """Analiza ZCT sobre una ventana de velas."""
+def analyze_zct_window(closes, amounts):
     ma = calc_smma(closes, SMMA_LEN)
     if not ma:
         return {}
@@ -128,15 +127,10 @@ def analyze_zct_window(closes: list, amounts: list) -> dict:
 
 
 # ══════════════════════════════════════════════════════════
-#  NIVELES HISTÓRICOS
+#  NIVELES HISTORICOS
 # ══════════════════════════════════════════════════════════
-def compute_levels_at(candle_time: float,
-                      d1: dict, d4h: dict,
-                      d1h: dict, d15m: dict) -> dict:
-    """Calcula los niveles ZCT (PDH/PDL, P4H, P1H, P15m) en el momento T."""
+def compute_levels_at(candle_time, d1, d4h, d1h, d15m):
     levels = {}
-
-    # PDH/PDL: dia anterior
     if d1 and 'time' in d1:
         cdate = datetime.utcfromtimestamp(candle_time).date()
         ph, pl = [], []
@@ -147,42 +141,28 @@ def compute_levels_at(candle_time: float,
         if ph:
             levels['PDH'] = ph[-1]
             levels['PDL'] = pl[-1]
-
-    # P4HH/P4HL
     if d4h and 'time' in d4h:
-        prev = [(t, h, l) for t, h, l
-                in zip(d4h['time'], d4h['high'], d4h['low'])
-                if t < candle_time]
+        prev = [(t, h, l) for t, h, l in zip(d4h['time'], d4h['high'], d4h['low']) if t < candle_time]
         if prev:
             levels['P4HH'] = prev[-1][1]
             levels['P4HL'] = prev[-1][2]
-
-    # P1HH/P1HL
     if d1h and 'time' in d1h:
-        prev = [(t, h, l) for t, h, l
-                in zip(d1h['time'], d1h['high'], d1h['low'])
-                if t < candle_time]
+        prev = [(t, h, l) for t, h, l in zip(d1h['time'], d1h['high'], d1h['low']) if t < candle_time]
         if prev:
             levels['P1HH'] = prev[-1][1]
             levels['P1HL'] = prev[-1][2]
-
-    # P15mH/P15mL
     if d15m and 'time' in d15m:
-        prev = [(t, h, l) for t, h, l
-                in zip(d15m['time'], d15m['high'], d15m['low'])
-                if t < candle_time]
+        prev = [(t, h, l) for t, h, l in zip(d15m['time'], d15m['high'], d15m['low']) if t < candle_time]
         if prev:
             levels['P15mH'] = prev[-1][1]
             levels['P15mL'] = prev[-1][2]
-
     return levels
 
 
 # ══════════════════════════════════════════════════════════
 #  RESULTADO DEL TRADE
 # ══════════════════════════════════════════════════════════
-def simulate_outcome(direction: str, entry_price: float,
-                     future_highs: list, future_lows: list) -> str:
+def simulate_outcome(direction, entry_price, future_highs, future_lows):
     tp = entry_price * (1 + TP_PCT) if direction == 'LONG' else entry_price * (1 - TP_PCT)
     sl = entry_price * (1 - SL_PCT) if direction == 'LONG' else entry_price * (1 + SL_PCT)
     for high, low in zip(future_highs, future_lows):
@@ -198,30 +178,22 @@ def simulate_outcome(direction: str, entry_price: float,
 # ══════════════════════════════════════════════════════════
 #  BACKTEST POR MONEDA
 # ══════════════════════════════════════════════════════════
-def backtest_coin(symbol: str) -> list:
-    """
-    Logica v2: el setup lo determina la PROXIMIDAD al nivel, no el movimiento pasado.
-
-    Para cada vela idx:
-      1. Comprueba si el precio esta a [0.2%, 0.5%] de cualquier nivel S/R.
-      2. Direccion = posicion del nivel (encima -> LONG, debajo -> SHORT).
-      3. Filtros ZCT: crosses <= 1, vol_ratio > 150%, ma_dir compatible.
-      4. Entrada simulada en la SIGUIENTE vela (como haria el trader al recibir la alerta).
-      5. Cooldown de 4h por nivel para evitar setups duplicados.
-    """
+def backtest_coin(symbol):
     results = []
 
-    d15m = get_klines(symbol, '15m', limit=500)
+    d15m = get_klines(symbol, '15m', limit=1500)
     time.sleep(0.15)
-    d1h  = get_klines(symbol, '1h',  limit=200)
+    d1h  = get_klines(symbol, '1h',  limit=500)
     time.sleep(0.15)
     d4h  = get_klines(symbol, '4h',  limit=200)
     time.sleep(0.15)
     d1   = get_klines(symbol, '1d',  limit=200)
     time.sleep(0.2)
 
-    if not d15m or len(d15m.get('close', [])) < WARMUP_CANDLES + OUTCOME_CANDLES + 2:
-        log.warning(f'{symbol}: datos insuficientes ({len(d15m["close"]) if d15m else 0} velas 15m)')
+    min_candles = WARMUP_CANDLES + OUTCOME_CANDLES + BKOUT_MAX_WAIT + 5
+    if not d15m or len(d15m.get('close', [])) < min_candles:
+        n_got = len(d15m['close']) if d15m else 0
+        log.warning(f'{symbol}: datos insuficientes ({n_got} velas 15m)')
         return []
 
     closes  = d15m['close']
@@ -231,15 +203,16 @@ def backtest_coin(symbol: str) -> list:
     times   = d15m.get('time', [])
     n       = len(closes)
 
-    # Cooldown: (lvl_name, direction) -> ultimo idx disparado
-    cooldown: dict = {}
+    cd_bkout = {}
+    cd_mr    = {}
 
-    for idx in range(WARMUP_CANDLES, n - OUTCOME_CANDLES - 1):
+    end_idx = n - OUTCOME_CANDLES - BKOUT_MAX_WAIT - 2
+
+    for idx in range(WARMUP_CANDLES, end_idx):
         price = closes[idx]
         if price <= 0:
             continue
 
-        # ZCT analisis sobre la ventana hasta idx (inclusive)
         zct = analyze_zct_window(closes[:idx+1], amounts[:idx+1])
         if not zct:
             continue
@@ -248,222 +221,210 @@ def backtest_coin(symbol: str) -> list:
         vol_ratio = zct['vol_ratio']
         ma_dir    = zct['direction']
 
-        # Filtros ZCT obligatorios
-        if crosses > 1 or vol_ratio < 150:
-            continue
-
-        # Niveles en este instante
         candle_time = times[idx] if idx < len(times) else 0
         levels = compute_levels_at(candle_time, d1, d4h, d1h, d15m)
         if not levels:
             continue
+
+        ref_idx    = max(0, idx - CHANGE_LB)
+        change_pct = (price - closes[ref_idx]) / closes[ref_idx] * 100 if closes[ref_idx] > 0 else 0.0
 
         for lvl_name, lvl_price in levels.items():
             if lvl_price <= 0:
                 continue
 
             dist_pct_val = abs(lvl_price - price) / price * 100
-
-            # Proximidad: el precio debe estar a [0.2%, 0.5%] del nivel
-            if not (0.2 <= dist_pct_val <= PROXIMITY_PCT * 100):
+            if not (MIN_DIST_PCT <= dist_pct_val <= PROXIMITY_PCT * 100):
                 continue
 
-            # Direccion segun posicion del nivel
-            if lvl_price > price:
-                direction = 'LONG'   # nivel encima -> breakout alcista
-                if ma_dir == 'down':
-                    continue         # MA en contra -> skip
-            else:
-                direction = 'SHORT'  # nivel debajo -> breakout bajista
-                if ma_dir == 'up':
-                    continue         # MA en contra -> skip
+            ts_str = datetime.utcfromtimestamp(candle_time).strftime('%m-%d %H:%M') if candle_time else '?'
 
-            # Cooldown 4h (16 velas de 15m) por nivel
-            cd_key = (lvl_name, direction)
-            if cd_key in cooldown and idx - cooldown[cd_key] < 16:
-                continue
-            cooldown[cd_key] = idx
+            # ─── BREAKOUT ───────────────────────────────────────
+            if crosses <= BKOUT_MAX_CROSSES and vol_ratio >= BKOUT_MIN_VOL:
+                if lvl_price > price:
+                    bk_dir = 'LONG'
+                    ma_ok  = (ma_dir != 'down')
+                else:
+                    bk_dir = 'SHORT'
+                    ma_ok  = (ma_dir != 'up')
 
-            # Entrada: SIGUIENTE vela (simula recibir la alerta y entrar)
-            entry_price = closes[idx + 1]
+                if ma_ok:
+                    cd_key = (lvl_name, 'BKOUT', bk_dir)
+                    if cd_key not in cd_bkout or (idx - cd_bkout[cd_key]) >= 16:
+                        entry_idx = None
+                        for j in range(1, BKOUT_MAX_WAIT + 1):
+                            if idx + j >= n:
+                                break
+                            if bk_dir == 'LONG' and closes[idx + j] > lvl_price:
+                                entry_idx = idx + j
+                                break
+                            if bk_dir == 'SHORT' and closes[idx + j] < lvl_price:
+                                entry_idx = idx + j
+                                break
 
-            # Resultado: desde idx+2 (primer bar completo tras la entrada)
-            future_highs = highs[idx+2 : idx+2+OUTCOME_CANDLES]
-            future_lows  = lows [idx+2 : idx+2+OUTCOME_CANDLES]
-            if len(future_highs) < 4:
-                continue
-            outcome = simulate_outcome(direction, entry_price, future_highs, future_lows)
-            if outcome == 'TIMEOUT':
-                continue
+                        if entry_idx is not None:
+                            ep = closes[entry_idx]
+                            fh = highs[entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
+                            fl = lows [entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
+                            if len(fh) >= 4:
+                                out = simulate_outcome(bk_dir, ep, fh, fl)
+                                if out != 'TIMEOUT':
+                                    cd_bkout[cd_key] = idx
+                                    results.append({
+                                        'strategy':   'BREAKOUT',
+                                        'symbol':     symbol,
+                                        'ts':         ts_str,
+                                        'direction':  bk_dir,
+                                        'level':      lvl_name,
+                                        'crosses':    crosses,
+                                        'ma_dir':     ma_dir,
+                                        'vol_ratio':  round(vol_ratio, 1),
+                                        'dist_pct':   round(dist_pct_val, 3),
+                                        'change_pct': round(change_pct, 1),
+                                        'outcome':    out,
+                                    })
 
-            # change_pct 24h (solo informativo)
-            ref_idx    = max(0, idx - CHANGE_LB)
-            change_pct = (price - closes[ref_idx]) / closes[ref_idx] * 100 if closes[ref_idx] > 0 else 0.0
+            # ─── MEAN REVERSION ─────────────────────────────────
+            if crosses >= MR_MIN_CROSSES and vol_ratio < MR_MAX_VOL and ma_dir in MR_MA_DIRS:
+                mr_dir = 'SHORT' if lvl_price > price else 'LONG'
 
-            results.append({
-                'symbol':     symbol,
-                'ts':         datetime.utcfromtimestamp(candle_time).strftime('%m-%d %H:%M') if candle_time else '?',
-                'direction':  direction,
-                'level':      lvl_name,
-                'change_pct': round(change_pct, 1),
-                'crosses':    crosses,
-                'ma_dir':     ma_dir,
-                'vol_ratio':  round(vol_ratio, 1),
-                'gap_pct':    0.0,
-                'single_lvl': 1,
-                'dist_pct':   round(dist_pct_val, 3),
-                'outcome':    outcome,
-            })
+                cd_key = (lvl_name, 'MR', mr_dir)
+                if cd_key not in cd_mr or (idx - cd_mr[cd_key]) >= 16:
+                    if idx + 1 < n:
+                        ep = closes[idx + 1]
+                        fh = highs[idx+2 : idx+2+OUTCOME_CANDLES]
+                        fl = lows [idx+2 : idx+2+OUTCOME_CANDLES]
+                        if len(fh) >= 4:
+                            out = simulate_outcome(mr_dir, ep, fh, fl)
+                            if out != 'TIMEOUT':
+                                cd_mr[cd_key] = idx
+                                results.append({
+                                    'strategy':   'MR',
+                                    'symbol':     symbol,
+                                    'ts':         ts_str,
+                                    'direction':  mr_dir,
+                                    'level':      lvl_name,
+                                    'crosses':    crosses,
+                                    'ma_dir':     ma_dir,
+                                    'vol_ratio':  round(vol_ratio, 1),
+                                    'dist_pct':   round(dist_pct_val, 3),
+                                    'change_pct': round(change_pct, 1),
+                                    'outcome':    out,
+                                })
 
     log.info(f'{symbol}: {len(results)} setups')
     return results
 
 
 # ══════════════════════════════════════════════════════════
-#  ANÁLISIS DE RESULTADOS
+#  ANALISIS
 # ══════════════════════════════════════════════════════════
-def win_rate(subset: list) -> float:
-    if not subset:
-        return 0.0
+def win_rate(subset):
+    if not subset: return 0.0
     return sum(1 for r in subset if r['outcome'] == 'WIN') / len(subset) * 100
 
 
-def analyze(results: list) -> dict:
-    if not results:
+def analyze_strategy(rows, label):
+    if not rows:
         return {}
-
-    total = len(results)
-    wins  = sum(1 for r in results if r['outcome'] == 'WIN')
+    total = len(rows)
+    wins  = sum(1 for r in rows if r['outcome'] == 'WIN')
     wr    = wins / total * 100
 
-    def breakdown(key, bins):
+    def brk(key, bins):
         out = {}
-        for lo, hi, label in bins:
-            sub = [r for r in results if lo <= r[key] < hi]
+        for lo, hi, lbl in bins:
+            sub = [r for r in rows if lo <= r[key] < hi]
             if sub:
                 w = sum(1 for r in sub if r['outcome'] == 'WIN')
-                out[label] = (w, len(sub), w / len(sub) * 100)
+                out[lbl] = (w, len(sub), w / len(sub) * 100)
         return out
 
-    # Breakdown por tipo de nivel (PDH/PDL, P4H, P1H, P15m)
     lvl_groups = {
-        'PDH/PDL':   ('PDH', 'PDL'),
-        'P4H H/L':   ('P4HH', 'P4HL'),
-        'P1H H/L':   ('P1HH', 'P1HL'),
-        'P15m H/L':  ('P15mH', 'P15mL'),
+        'PDH/PDL':  ('PDH', 'PDL'),
+        'P4H H/L':  ('P4HH', 'P4HL'),
+        'P1H H/L':  ('P1HH', 'P1HL'),
+        'P15m H/L': ('P15mH', 'P15mL'),
     }
     by_level = {}
-    for label, prefixes in lvl_groups.items():
-        sub = [r for r in results if r.get('level', '') in prefixes]
+    for lbl, names in lvl_groups.items():
+        sub = [r for r in rows if r.get('level', '') in names]
         if sub:
             w = sum(1 for r in sub if r['outcome'] == 'WIN')
-            by_level[label] = (w, len(sub), w / len(sub) * 100)
+            by_level[lbl] = (w, len(sub), w / len(sub) * 100)
+
+    by_dir = {}
+    for d in ('LONG', 'SHORT'):
+        sub = [r for r in rows if r['direction'] == d]
+        if sub:
+            w = sum(1 for r in sub if r['outcome'] == 'WIN')
+            by_dir[d] = (w, len(sub), w / len(sub) * 100)
 
     return {
-        'total': total, 'wins': wins, 'wr': wr,
-        'by_crosses': breakdown('crosses', [
-            (0, 2, '0-1 cruces'), (2, 4, '2-3 cruces'),
-            (4, 6, '4-5 cruces'), (6, 99, '6+ cruces'),
-        ]),
+        'label': label, 'total': total, 'wins': wins, 'wr': wr,
         'by_ma': {d: (
-            sum(1 for r in results if r['outcome'] == 'WIN' and r['ma_dir'] == d),
-            sum(1 for r in results if r['ma_dir'] == d),
-            win_rate([r for r in results if r['ma_dir'] == d]),
-        ) for d in ('up', 'down', 'sideways')
-            if any(r['ma_dir'] == d for r in results)},
-        'by_vol': breakdown('vol_ratio', [
-            (0, 85, 'Vol <85%'), (85, 115, 'Vol 85-115%'),
-            (115, 150, 'Vol 115-150%'), (150, 9999, 'Vol >150%'),
-        ]),
-        'by_change': breakdown('change_pct', [
-            (-100, -20, 'Dump >20%'), (-20, -5, 'Dump 5-20%'),
-            (5, 20, 'Pump 5-20%'), (20, 100, 'Pump >20%'),
-        ]),
-        'by_dist': breakdown('dist_pct', [
-            (0, 0.2, 'Dist <0.2%'), (0.2, 0.35, 'Dist 0.2-0.35%'),
-            (0.35, 0.5, 'Dist 0.35-0.5%'),
+            sum(1 for r in rows if r['outcome'] == 'WIN' and r['ma_dir'] == d),
+            sum(1 for r in rows if r['ma_dir'] == d),
+            win_rate([r for r in rows if r['ma_dir'] == d]),
+        ) for d in ('up', 'down', 'sideways') if any(r['ma_dir'] == d for r in rows)},
+        'by_dist': brk('dist_pct', [
+            (0.20, 0.30, '0.2-0.3%'), (0.30, 0.40, '0.3-0.4%'), (0.40, 0.51, '0.4-0.5%'),
         ]),
         'by_level': by_level,
+        'by_dir':   by_dir,
     }
 
 
 # ══════════════════════════════════════════════════════════
 #  REPORTE TELEGRAM
 # ══════════════════════════════════════════════════════════
-def bar(wr: float) -> str:
+def bar(wr):
     filled = round(wr / 10)
-    return '█' * filled + '░' * (10 - filled)
+    return 'X' * filled + '.' * (10 - filled)
 
 
-def section(title: str, data: dict) -> str:
-    if not data:
-        return ''
-    lines = [f'<b>{title}</b>']
+def fmt_section(title, data):
+    if not data: return ''
+    lines = [title]
     for label, (w, n, wr) in sorted(data.items(), key=lambda x: -x[1][2]):
-        safe = html_mod.escape(label)
-        lines.append(f'  {safe:<18} {bar(wr)} {wr:.0f}% ({w}/{n})')
+        lines.append(f'  {html_mod.escape(label):<16} {bar(wr)} {wr:.0f}% ({w}/{n})')
     return '\n'.join(lines)
 
 
-def build_report(a: dict, n_coins: int) -> str:
-    if not a:
-        return 'Sin datos suficientes.'
-
+def fmt_strategy(a):
+    if not a: return ''
     wr    = a['wr']
-    total = a['total']
-    wins  = a['wins']
     emoji = 'OK' if wr >= 55 else 'MEH' if wr >= 45 else 'BAD'
+    lines = [
+        f'{emoji} WR {wr:.1f}%  ({a["wins"]}W/{a["total"]-a["wins"]}L / {a["total"]} total)',
+        fmt_section('  Por direccion:', a['by_dir']),
+        fmt_section('  Por MA:', a['by_ma']),
+        fmt_section('  Por distancia:', a['by_dist']),
+        fmt_section('  Por nivel:', a['by_level']),
+    ]
+    return '\n'.join(l for l in lines if l)
 
-    # Recomendaciones automaticas
-    recs = []
 
-    best_cross = max(a['by_crosses'].items(), key=lambda x: x[1][2], default=None)
-    worst_cross = min(a['by_crosses'].items(), key=lambda x: x[1][2], default=None)
-    if best_cross and best_cross[1][2] > wr + 5:
-        recs.append(f'Mejor WR con {best_cross[0]} ({best_cross[1][2]:.0f}%)')
-    if worst_cross and worst_cross[1][2] < wr - 10:
-        recs.append(f'Evitar setups con {worst_cross[0]} ({worst_cross[1][2]:.0f}%)')
-
-    best_dist = max(a['by_dist'].items(), key=lambda x: x[1][2], default=None)
-    if best_dist and best_dist[1][2] > wr + 5:
-        recs.append(f'Mejor WR cuando {best_dist[0]} ({best_dist[1][2]:.0f}%)')
-
-    best_vol = max(a['by_vol'].items(), key=lambda x: x[1][2], default=None)
-    if best_vol and best_vol[1][2] > wr + 5:
-        recs.append(f'{best_vol[0]} tiene mejor WR ({best_vol[1][2]:.0f}%)')
-
+def build_report(bkout, mr, n_coins):
+    ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    bkout_str = fmt_strategy(bkout) if bkout else 'Sin datos'
+    mr_str    = fmt_strategy(mr) if mr else 'Sin datos'
     parts = [
-        f'ZCT Backtest v2 -- {n_coins} monedas * 15m * 6h horizonte',
-        f'Entrada: vela siguiente al setup (timing real del scanner)',
-        f'',
-        f'{emoji} Win rate: {wr:.1f}%  ({wins} win / {total-wins} loss / {total} total)',
-        f'  SL: 2%   TP: 6% (3R)',
-        f'',
-        section('Por cruces de MA:', a['by_crosses']),
-        f'',
-        section('Por direccion MA:', a['by_ma']),
-        f'',
-        section('Por volumen relativo:', a['by_vol']),
-        f'',
-        section('Por fuerza del movimiento:', a['by_change']),
-        f'',
-        section('Por distancia al nivel:', a['by_dist']),
-        f'',
-        section('Por tipo de nivel:', a.get('by_level', {})),
+        f'ZCT Backtest v3 -- {n_coins} monedas * 15m * ~15 dias',
+        f'SL: 2%  TP: 6% (3R)  |  Horizonte: {OUTCOME_CANDLES*15//60}h',
+        '',
+        '=== BREAKOUT (entrada tras cruzar nivel) ===',
+        bkout_str,
+        '',
+        '=== MEAN REVERSION (rechazo en nivel) ===',
+        mr_str,
+        '',
+        ts,
     ]
-
-    if recs:
-        parts += ['', 'Insights automaticos:'] + recs
-
-    parts += [
-        f'',
-        f'{datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}',
-    ]
-
     return '\n'.join(p for p in parts if p is not None)
 
 
-def send_telegram(msg: str):
+def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print(msg)
         return
@@ -485,7 +446,7 @@ def send_telegram(msg: str):
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
-    log.info('=== ZCT Backtester iniciando ===')
+    log.info('=== ZCT Backtester v3 iniciando ===')
     all_results = []
 
     for i, symbol in enumerate(COINS):
@@ -498,24 +459,26 @@ def main():
 
     log.info(f'Total setups: {len(all_results)}')
 
-    # Guardar CSV
     csv_path = os.path.join(os.path.dirname(__file__), 'backtest_results.csv')
+    fieldnames = ['strategy', 'symbol', 'ts', 'direction', 'level',
+                  'crosses', 'ma_dir', 'vol_ratio', 'dist_pct', 'change_pct', 'outcome']
     if all_results:
-        fieldnames = ['symbol', 'ts', 'direction', 'level', 'change_pct',
-                      'crosses', 'ma_dir', 'vol_ratio', 'gap_pct',
-                      'single_lvl', 'dist_pct', 'outcome']
         with open(csv_path, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(all_results)
         log.info(f'CSV guardado: {csv_path}')
 
-    # Analisis y Telegram
-    analysis = analyze(all_results)
-    report   = build_report(analysis, len(COINS))
+    bkout_rows = [r for r in all_results if r['strategy'] == 'BREAKOUT']
+    mr_rows    = [r for r in all_results if r['strategy'] == 'MR']
+
+    bkout_analysis = analyze_strategy(bkout_rows, 'BREAKOUT')
+    mr_analysis    = analyze_strategy(mr_rows,    'MR')
+
+    report = build_report(bkout_analysis, mr_analysis, len(COINS))
     log.info('Enviando reporte...')
     send_telegram(report)
-    log.info('=== Backtest completado ===')
+    log.info('=== Backtest v3 completado ===')
 
 
 if __name__ == '__main__':
