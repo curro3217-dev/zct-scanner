@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-ZCT Backtester â Analiza el rendimiento histÃ³rico del scanner.
+ZCT Backtester — Analiza el rendimiento histórico del scanner.
 
-Simula las seÃ±ales del scanner en las Ãºltimas velas disponibles de MEXC
-y calcula quÃ© filtros realmente funcionan (win rate por feature).
-EnvÃ­a el anÃ¡lisis completo por Telegram.
+Simula las señales del scanner en las últimas velas disponibles de MEXC
+y calcula qué filtros realmente funcionan (win rate por feature).
+Envía el análisis completo por Telegram.
 
 Uso: python backtest.py
 Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (env vars)
@@ -18,13 +18,13 @@ import requests
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 #  CONFIG (igual que el scanner)
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 PROXIMITY_PCT = 0.005    # 0.5% de proximidad al nivel
-MAX_DIST_PCT  = 15.0     # nivel ignorado si estÃ¡ a >15% del precio
-CLUSTER_TOP   = 2.0      # distancia mÃ¡xima entre 2 niveles (top coins)
-CLUSTER_ALT   = 3.0      # distancia mÃ¡xima entre 2 niveles (altcoins)
+MAX_DIST_PCT  = 15.0     # nivel ignorado si está a >15% del precio
+CLUSTER_TOP   = 2.0      # distancia máxima entre 2 niveles (top coins)
+CLUSTER_ALT   = 3.0      # distancia máxima entre 2 niveles (altcoins)
 SL_PCT        = 0.02     # 2% stop loss
 TP_PCT        = SL_PCT * 3.0  # 6% = 3R
 SMMA_LEN      = 30
@@ -34,11 +34,11 @@ MA_DIR_LB     = 5
 MA_DIR_THR    = 0.08
 STRONG_PUMP   = 30.0
 
-# Timeframe de simulaciÃ³n y ventana de resultado
+# Timeframe de simulación y ventana de resultado
 SIM_INTERVAL   = '15m'   # vela base del backtest
 OUTCOME_CANDLES = 24     # velas hacia adelante para el resultado (24 * 15m = 6h)
 WARMUP_CANDLES  = SMMA_LEN + CROSS_LB + MA_DIR_LB + 5  # ~85 velas de calentamiento
-CHANGE_LB       = 96     # velas atrÃ¡s para calcular el cambio 24h (96 * 15m = 24h)
+CHANGE_LB       = 96     # velas atrás para calcular el cambio 24h (96 * 15m = 24h)
 
 TOP_COINS = {'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'SOL_USDT', 'XRP_USDT'}
 
@@ -46,7 +46,7 @@ INTERVAL_MAP = {
     '15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1',
 }
 
-# 30 monedas mÃ¡s lÃ­quidas en MEXC futuros
+# 30 monedas más líquidas en MEXC futuros
 COINS = [
     'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'SOL_USDT', 'XRP_USDT',
     'DOGE_USDT', 'ADA_USDT', 'AVAX_USDT', 'LINK_USDT', 'DOT_USDT',
@@ -60,9 +60,9 @@ TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 #  API MEXC
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 def get_klines(symbol: str, interval: str, limit: int = 200) -> dict | None:
     try:
         r = requests.get(
@@ -80,9 +80,9 @@ def get_klines(symbol: str, interval: str, limit: int = 200) -> dict | None:
         return None
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
-#  ANÃLISIS ZCT (mismo cÃ³digo que el scanner)
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
+#  ANÁLISIS ZCT (mismo código que el scanner)
+# ══════════════════════════════════════════════════════════
 def calc_smma(closes: list, length: int = 30) -> list:
     if len(closes) < length:
         return []
@@ -127,49 +127,16 @@ def analyze_zct_window(closes: list, amounts: list) -> dict:
     return {'crosses': crosses, 'direction': direction, 'vol_ratio': vol_ratio}
 
 
-def find_level_cluster(levels: dict, price: float,
-                       direction: str, symbol: str,
-                       change_pct: float = 0.0) -> dict | None:
-    cluster_pct = CLUSTER_TOP if symbol in TOP_COINS else CLUSTER_ALT
-    candidates  = []
-    for name, lvl in levels.items():
-        dist = abs(lvl - price) / price * 100
-        if dist > MAX_DIST_PCT:
-            continue
-        if direction == 'LONG' and lvl > price:
-            candidates.append((name, lvl))
-        elif direction == 'SHORT' and lvl < price:
-            candidates.append((name, lvl))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: abs(x[1] - price))
-    for i in range(len(candidates)):
-        for j in range(i + 1, len(candidates)):
-            n1, l1 = candidates[i]
-            n2, l2 = candidates[j]
-            gap = abs(l1 - l2) / min(l1, l2) * 100
-            if gap <= cluster_pct:
-                return {'lvl1_name': n1, 'lvl1': l1,
-                        'lvl2_name': n2, 'lvl2': l2,
-                        'gap_pct':   gap, 'single_level': False}
-    if abs(change_pct) >= STRONG_PUMP:
-        n1, l1 = candidates[0]
-        return {'lvl1_name': n1, 'lvl1': l1,
-                'lvl2_name': None, 'lvl2': None,
-                'gap_pct': 0.0, 'single_level': True}
-    return None
-
-
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
-#  NIVELES HISTÃRICOS
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
+#  NIVELES HISTÓRICOS
+# ══════════════════════════════════════════════════════════
 def compute_levels_at(candle_time: float,
                       d1: dict, d4h: dict,
                       d1h: dict, d15m: dict) -> dict:
     """Calcula los niveles ZCT (PDH/PDL, P4H, P1H, P15m) en el momento T."""
     levels = {}
 
-    # PDH/PDL: dÃ­a anterior
+    # PDH/PDL: dia anterior
     if d1 and 'time' in d1:
         cdate = datetime.utcfromtimestamp(candle_time).date()
         ph, pl = [], []
@@ -211,9 +178,9 @@ def compute_levels_at(candle_time: float,
     return levels
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 #  RESULTADO DEL TRADE
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 def simulate_outcome(direction: str, entry_price: float,
                      future_highs: list, future_lows: list) -> str:
     tp = entry_price * (1 + TP_PCT) if direction == 'LONG' else entry_price * (1 - TP_PCT)
@@ -228,10 +195,20 @@ def simulate_outcome(direction: str, entry_price: float,
     return 'TIMEOUT'
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 #  BACKTEST POR MONEDA
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 def backtest_coin(symbol: str) -> list:
+    """
+    Logica v2: el setup lo determina la PROXIMIDAD al nivel, no el movimiento pasado.
+
+    Para cada vela idx:
+      1. Comprueba si el precio esta a [0.2%, 0.5%] de cualquier nivel S/R.
+      2. Direccion = posicion del nivel (encima -> LONG, debajo -> SHORT).
+      3. Filtros ZCT: crosses <= 1, vol_ratio > 150%, ma_dir compatible.
+      4. Entrada simulada en la SIGUIENTE vela (como haria el trader al recibir la alerta).
+      5. Cooldown de 4h por nivel para evitar setups duplicados.
+    """
     results = []
 
     d15m = get_klines(symbol, '15m', limit=500)
@@ -243,7 +220,7 @@ def backtest_coin(symbol: str) -> list:
     d1   = get_klines(symbol, '1d',  limit=200)
     time.sleep(0.2)
 
-    if not d15m or len(d15m.get('close', [])) < WARMUP_CANDLES + OUTCOME_CANDLES + CHANGE_LB:
+    if not d15m or len(d15m.get('close', [])) < WARMUP_CANDLES + OUTCOME_CANDLES + 2:
         log.warning(f'{symbol}: datos insuficientes ({len(d15m["close"]) if d15m else 0} velas 15m)')
         return []
 
@@ -254,105 +231,97 @@ def backtest_coin(symbol: str) -> list:
     times   = d15m.get('time', [])
     n       = len(closes)
 
-    start = max(WARMUP_CANDLES, CHANGE_LB)
+    # Cooldown: (lvl_name, direction) -> ultimo idx disparado
+    cooldown: dict = {}
 
-    for idx in range(start, n - OUTCOME_CANDLES):
+    for idx in range(WARMUP_CANDLES, n - OUTCOME_CANDLES - 1):
         price = closes[idx]
         if price <= 0:
             continue
 
-        # Cambio en las Ãºltimas 24h (96 velas de 15m)
-        ref_idx    = max(0, idx - CHANGE_LB)
-        ref_price  = closes[ref_idx]
-        change_pct = (price - ref_price) / ref_price * 100 if ref_price > 0 else 0.0
-
-        # Determinar direcciÃ³n (testamos ambas si no hay movimiento fuerte)
-        directions = []
-        if change_pct >= 5.0:    # al menos +5% en 24h para LONG
-            directions.append(('LONG', change_pct))
-        if change_pct <= -5.0:   # al menos -5% para SHORT
-            directions.append(('SHORT', change_pct))
-        if not directions:
-            continue
-
-        # ZCT anÃ¡lisis sobre la ventana hasta idx
-        win_closes  = closes[:idx+1]
-        win_amounts = amounts[:idx+1]
-        zct = analyze_zct_window(win_closes, win_amounts)
+        # ZCT analisis sobre la ventana hasta idx (inclusive)
+        zct = analyze_zct_window(closes[:idx+1], amounts[:idx+1])
         if not zct:
             continue
 
-        # Niveles histÃ³ricos en este punto
-        candle_time = times[idx] if times else 0
-        levels = compute_levels_at(candle_time, d1, d4h, d1h, d15m)
-        if len(levels) < 2:
+        crosses   = zct['crosses']
+        vol_ratio = zct['vol_ratio']
+        ma_dir    = zct['direction']
+
+        # Filtros ZCT obligatorios
+        if crosses > 1 or vol_ratio < 150:
             continue
 
-        for direction, cpct in directions:
-            # Filtro 1: MA direction compatible
-            ma_dir = zct['direction']
-            if direction == 'LONG' and ma_dir == 'down':
-                continue
-            if direction == 'SHORT' and ma_dir == 'up':
+        # Niveles en este instante
+        candle_time = times[idx] if idx < len(times) else 0
+        levels = compute_levels_at(candle_time, d1, d4h, d1h, d15m)
+        if not levels:
+            continue
+
+        for lvl_name, lvl_price in levels.items():
+            if lvl_price <= 0:
                 continue
 
-            # Filtro 2: mÃ¡ximo 1 cruce
-            crosses = zct['crosses']
-            if crosses > 1:
+            dist_pct_val = abs(lvl_price - price) / price * 100
+
+            # Proximidad: el precio debe estar a [0.2%, 0.5%] del nivel
+            if not (0.2 <= dist_pct_val <= PROXIMITY_PCT * 100):
                 continue
 
-            # Filtro 3: volumen spike obligatorio (>150%)
-            vol_ratio = zct['vol_ratio']
-            if vol_ratio < 150:
-                continue
+            # Direccion segun posicion del nivel
+            if lvl_price > price:
+                direction = 'LONG'   # nivel encima -> breakout alcista
+                if ma_dir == 'down':
+                    continue         # MA en contra -> skip
+            else:
+                direction = 'SHORT'  # nivel debajo -> breakout bajista
+                if ma_dir == 'up':
+                    continue         # MA en contra -> skip
 
-            # Cluster de 2 niveles
-            cluster = find_level_cluster(levels, price, direction, symbol, cpct)
-            if not cluster:
+            # Cooldown 4h (16 velas de 15m) por nivel
+            cd_key = (lvl_name, direction)
+            if cd_key in cooldown and idx - cooldown[cd_key] < 16:
                 continue
+            cooldown[cd_key] = idx
 
-            # Proximidad
-            near_lvl = cluster['lvl1']
-            if cluster['lvl2'] is not None:
-                if abs(cluster['lvl2'] - price) < abs(near_lvl - price):
-                    near_lvl = cluster['lvl2']
-            dist = abs(near_lvl - price) / near_lvl
-            dist_pct_val = dist * 100
-            if dist > PROXIMITY_PCT:
+            # Entrada: SIGUIENTE vela (simula recibir la alerta y entrar)
+            entry_price = closes[idx + 1]
+
+            # Resultado: desde idx+2 (primer bar completo tras la entrada)
+            future_highs = highs[idx+2 : idx+2+OUTCOME_CANDLES]
+            future_lows  = lows [idx+2 : idx+2+OUTCOME_CANDLES]
+            if len(future_highs) < 4:
                 continue
-
-            # Filtro 5: distancia mÃ­nima (muy pegado = precio ya lo cruzÃ³)
-            if dist_pct_val < 0.2:
-                continue
-
-            # Â¡CondiciÃ³n de alerta cumplida! â calcular resultado
-            future_highs = highs[idx+1 : idx+1+OUTCOME_CANDLES]
-            future_lows  = lows [idx+1 : idx+1+OUTCOME_CANDLES]
-            outcome = simulate_outcome(direction, price, future_highs, future_lows)
+            outcome = simulate_outcome(direction, entry_price, future_highs, future_lows)
             if outcome == 'TIMEOUT':
                 continue
 
+            # change_pct 24h (solo informativo)
+            ref_idx    = max(0, idx - CHANGE_LB)
+            change_pct = (price - closes[ref_idx]) / closes[ref_idx] * 100 if closes[ref_idx] > 0 else 0.0
+
             results.append({
-                'symbol':      symbol,
-                'ts':          datetime.utcfromtimestamp(candle_time).strftime('%m-%d %H:%M') if candle_time else '?',
-                'direction':   direction,
-                'change_pct':  round(cpct, 1),
-                'crosses':     crosses,
-                'ma_dir':      ma_dir,
-                'vol_ratio':   round(zct['vol_ratio'], 1),
-                'gap_pct':     round(cluster['gap_pct'], 2),
-                'single_lvl':  int(cluster['single_level']),
-                'dist_pct':    round(dist * 100, 3),
-                'outcome':     outcome,
+                'symbol':     symbol,
+                'ts':         datetime.utcfromtimestamp(candle_time).strftime('%m-%d %H:%M') if candle_time else '?',
+                'direction':  direction,
+                'level':      lvl_name,
+                'change_pct': round(change_pct, 1),
+                'crosses':    crosses,
+                'ma_dir':     ma_dir,
+                'vol_ratio':  round(vol_ratio, 1),
+                'gap_pct':    0.0,
+                'single_lvl': 1,
+                'dist_pct':   round(dist_pct_val, 3),
+                'outcome':    outcome,
             })
 
     log.info(f'{symbol}: {len(results)} setups')
     return results
 
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
-#  ANÃLISIS DE RESULTADOS
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
+#  ANÁLISIS DE RESULTADOS
+# ══════════════════════════════════════════════════════════
 def win_rate(subset: list) -> float:
     if not subset:
         return 0.0
@@ -375,6 +344,20 @@ def analyze(results: list) -> dict:
                 w = sum(1 for r in sub if r['outcome'] == 'WIN')
                 out[label] = (w, len(sub), w / len(sub) * 100)
         return out
+
+    # Breakdown por tipo de nivel (PDH/PDL, P4H, P1H, P15m)
+    lvl_groups = {
+        'PDH/PDL':   ('PDH', 'PDL'),
+        'P4H H/L':   ('P4HH', 'P4HL'),
+        'P1H H/L':   ('P1HH', 'P1HL'),
+        'P15m H/L':  ('P15mH', 'P15mL'),
+    }
+    by_level = {}
+    for label, prefixes in lvl_groups.items():
+        sub = [r for r in results if r.get('level', '') in prefixes]
+        if sub:
+            w = sum(1 for r in sub if r['outcome'] == 'WIN')
+            by_level[label] = (w, len(sub), w / len(sub) * 100)
 
     return {
         'total': total, 'wins': wins, 'wr': wr,
@@ -400,15 +383,16 @@ def analyze(results: list) -> dict:
             (0, 0.2, 'Dist <0.2%'), (0.2, 0.35, 'Dist 0.2-0.35%'),
             (0.35, 0.5, 'Dist 0.35-0.5%'),
         ]),
+        'by_level': by_level,
     }
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 #  REPORTE TELEGRAM
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 def bar(wr: float) -> str:
     filled = round(wr / 10)
-    return 'â' * filled + 'â' * (10 - filled)
+    return '█' * filled + '░' * (10 - filled)
 
 
 def section(title: str, data: dict) -> str:
@@ -423,59 +407,57 @@ def section(title: str, data: dict) -> str:
 
 def build_report(a: dict, n_coins: int) -> str:
     if not a:
-        return 'â Sin datos suficientes.'
+        return 'Sin datos suficientes.'
 
     wr    = a['wr']
     total = a['total']
     wins  = a['wins']
-    emoji = 'ð¢' if wr >= 55 else 'ð¡' if wr >= 45 else 'ð´'
+    emoji = 'OK' if wr >= 55 else 'MEH' if wr >= 45 else 'BAD'
 
-    # Recomendaciones automÃ¡ticas
+    # Recomendaciones automaticas
     recs = []
 
-    # Â¿QuÃ© nÃºmero de cruces funciona mejor?
     best_cross = max(a['by_crosses'].items(), key=lambda x: x[1][2], default=None)
     worst_cross = min(a['by_crosses'].items(), key=lambda x: x[1][2], default=None)
     if best_cross and best_cross[1][2] > wr + 5:
-        recs.append(f'â¢ Mejor WR con {best_cross[0]} ({best_cross[1][2]:.0f}%) '
-                    f'â considera bajar el umbral de cruces')
+        recs.append(f'Mejor WR con {best_cross[0]} ({best_cross[1][2]:.0f}%)')
     if worst_cross and worst_cross[1][2] < wr - 10:
-        recs.append(f'â¢ Evitar setups con {worst_cross[0]} ({worst_cross[1][2]:.0f}%)')
+        recs.append(f'Evitar setups con {worst_cross[0]} ({worst_cross[1][2]:.0f}%)')
 
-    # Â¿QuÃ© distancia al nivel funciona mejor?
     best_dist = max(a['by_dist'].items(), key=lambda x: x[1][2], default=None)
     if best_dist and best_dist[1][2] > wr + 5:
-        recs.append(f'â¢ Mejor WR cuando {best_dist[0]} ({best_dist[1][2]:.0f}%) '
-                    f'â considera afinar la proximidad')
+        recs.append(f'Mejor WR cuando {best_dist[0]} ({best_dist[1][2]:.0f}%)')
 
-    # Â¿Volumen importa?
     best_vol = max(a['by_vol'].items(), key=lambda x: x[1][2], default=None)
     if best_vol and best_vol[1][2] > wr + 5:
-        recs.append(f'â¢ {best_vol[0]} tiene mejor WR ({best_vol[1][2]:.0f}%)')
+        recs.append(f'{best_vol[0]} tiene mejor WR ({best_vol[1][2]:.0f}%)')
 
     parts = [
-        f'ð <b>ZCT Backtest â {n_coins} monedas Â· 15m Â· 6h horizonte</b>',
+        f'ZCT Backtest v2 -- {n_coins} monedas * 15m * 6h horizonte',
+        f'Entrada: vela siguiente al setup (timing real del scanner)',
         f'',
-        f'{emoji} Win rate: <b>{wr:.1f}%</b>  ({wins} win / {total-wins} loss / {total} total)',
+        f'{emoji} Win rate: {wr:.1f}%  ({wins} win / {total-wins} loss / {total} total)',
         f'  SL: 2%   TP: 6% (3R)',
         f'',
-        section('ð Por cruces de MA:', a['by_crosses']),
+        section('Por cruces de MA:', a['by_crosses']),
         f'',
-        section('ð Por direcciÃ³n MA:', a['by_ma']),
+        section('Por direccion MA:', a['by_ma']),
         f'',
-        section('ð Por volumen relativo:', a['by_vol']),
+        section('Por volumen relativo:', a['by_vol']),
         f'',
-        section('ð Por fuerza del movimiento:', a['by_change']),
+        section('Por fuerza del movimiento:', a['by_change']),
         f'',
-        section('ð Por distancia al nivel:', a['by_dist']),
+        section('Por distancia al nivel:', a['by_dist']),
+        f'',
+        section('Por tipo de nivel:', a.get('by_level', {})),
     ]
 
     if recs:
-        parts += ['', '<b>ð¡ Insights automÃ¡ticos:</b>'] + recs
+        parts += ['', 'Insights automaticos:'] + recs
 
     parts += [
         f'',
-        f'â° {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}',
+        f'{datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}',
     ]
 
     return '\n'.join(p for p in parts if p is not None)
@@ -499,9 +481,9 @@ def send_telegram(msg: str):
         print(msg)
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 #  MAIN
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ══════════════════════════════════════════════════════════
 def main():
     log.info('=== ZCT Backtester iniciando ===')
     all_results = []
@@ -519,13 +501,16 @@ def main():
     # Guardar CSV
     csv_path = os.path.join(os.path.dirname(__file__), 'backtest_results.csv')
     if all_results:
+        fieldnames = ['symbol', 'ts', 'direction', 'level', 'change_pct',
+                      'crosses', 'ma_dir', 'vol_ratio', 'gap_pct',
+                      'single_lvl', 'dist_pct', 'outcome']
         with open(csv_path, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=all_results[0].keys())
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(all_results)
         log.info(f'CSV guardado: {csv_path}')
 
-    # AnÃ¡lisis y Telegram
+    # Analisis y Telegram
     analysis = analyze(all_results)
     report   = build_report(analysis, len(COINS))
     log.info('Enviando reporte...')
