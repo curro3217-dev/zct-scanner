@@ -97,7 +97,7 @@ def count_crosses(closes: list, ma: list, lb: int = 50) -> int:
     n = min(lb, len(closes) - 1, len(ma) - 1)
     crosses = 0
     for i in range(1, n + 1):
-        above_now  = closes[!i]     >= ma[-i]
+        above_now  = closes[-i]     >= ma[-i]
         above_prev = closes[-(i+1)] >= ma[-(i+1)]
         if above_now != above_prev:
             crosses += 1
