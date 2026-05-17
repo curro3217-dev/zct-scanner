@@ -437,9 +437,14 @@ def analyze(mover: dict):
         log.info(f'{symbol}: SHORT pero MA alcista → skip')
         return
 
-    # Filtro 2: máximo 6 cruces (7+ = choppy, no apto para momentum)
-    if crosses > 6:
+    # Filtro 2: máximo 1 cruce (2-3 = 0% WR en backtest, >3 = choppy)
+    if crosses > 1:
         log.info(f'{symbol}: demasiado choppy ({crosses} cruces) → skip')
+        return
+
+    # Filtro 3: volumen spike obligatorio (>150% de la media — único con edge real)
+    if vol_ratio < 150:
+        log.info(f'{symbol}: volumen insuficiente ({vol_ratio:.0f}%) → skip')
         return
 
     log.info(f'{symbol}: chg={mover["change_pct"]:.1f}% dir={direction} '
@@ -473,6 +478,11 @@ def analyze(mover: dict):
 
     if dist > PROXIMITY_PCT:
         log.info(f'{symbol}: no suficientemente cerca ({dist_pct:.2f}%) → skip')
+        return
+
+    # Filtro 5: distancia mínima al nivel (muy pegado = precio ya lo cruzó)
+    if dist_pct < 0.2:
+        log.info(f'{symbol}: demasiado pegado al nivel ({dist_pct:.3f}%) → skip')
         return
 
     # Alerta
