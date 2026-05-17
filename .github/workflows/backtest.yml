@@ -1,9 +1,9 @@
 name: ZCT Backtest
 
 on:
-  workflow_dispatch:   # Botón manual en GitHub Actions
+  workflow_dispatch:
   schedule:
-    - cron: '0 8 * * 1'  # Lunes a las 8:00 UTC (automático semanal)
+    - cron: '0 8 * * 1'
 
 jobs:
   backtest:
@@ -27,12 +27,35 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python zct_scanner/backtest.py
 
-      - name: Show CSV results
+      - name: Analyze results
         if: always()
         run: |
-          echo "=== CSV_START ==="
-          cat zct_scanner/backtest_results.csv || echo "no csv found"
-          echo "=== CSV_END ==="
+          python - <<'EOF'
+          import csv, collections, os
+          path = 'zct_scanner/backtest_results.csv'
+          if not os.path.exists(path):
+              print("NO CSV"); exit()
+          rows = list(csv.DictReader(open(path)))
+          total = len(rows)
+          print(f"TOTAL SETUPS: {total}")
+          for strategy in ('BREAKOUT','MR'):
+              sub = [r for r in rows if r['strategy']==strategy]
+              if not sub: continue
+              wins = sum(1 for r in sub if r['outcome']=='WIN')
+              losses = sum(1 for r in sub if r['outcome']=='LOSS')
+              wr = wins/len(sub)*100
+              print(f"\n=== {strategy} === {len(sub)} setups | WR {wr:.1f}% ({wins}W/{losses}L)")
+              for key in ('direction','ma_dir','level'):
+                  counts = collections.Counter(r[key] for r in sub)
+                  win_by = collections.Counter(r[key] for r in sub if r['outcome']=='WIN')
+                  print(f"  by {key}:")
+                  for val,n in sorted(counts.items()):
+                      w = win_by.get(val,0)
+                      print(f"    {val:15s} {w}/{n} = {w/n*100:.0f}%")
+          print("\n=== FULL CSV ===")
+          for r in rows:
+              print(','.join(r.values()))
+          EOF
 
       - name: Upload CSV de resultados
         if: always()
