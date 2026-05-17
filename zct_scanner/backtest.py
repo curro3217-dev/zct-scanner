@@ -97,7 +97,7 @@ def count_crosses(closes: list, ma: list, lb: int = 50) -> int:
     n = min(lb, len(closes) - 1, len(ma) - 1)
     crosses = 0
     for i in range(1, n + 1):
-        above_now  = closes[-i]     >= ma[-i]
+        above_now  = closes[!i]     >= ma[-i]
         above_prev = closes[-(i+1)] >= ma[-(i+1)]
         if above_now != above_prev:
             crosses += 1
@@ -234,7 +234,7 @@ def simulate_outcome(direction: str, entry_price: float,
 def backtest_coin(symbol: str) -> list:
     results = []
 
-    d15m = get_klines(symbol, '15m', limit=250)
+    d15m = get_klines(symbol, '15m', limit=500)
     time.sleep(0.15)
     d1h  = get_klines(symbol, '1h',  limit=200)
     time.sleep(0.15)
@@ -296,9 +296,14 @@ def backtest_coin(symbol: str) -> list:
             if direction == 'SHORT' and ma_dir == 'up':
                 continue
 
-            # Filtro 2: mÃ¡ximo 6 cruces
+            # Filtro 2: mÃ¡ximo 1 cruce
             crosses = zct['crosses']
-            if crosses > 6:
+            if crosses > 1:
+                continue
+
+            # Filtro 3: volumen spike obligatorio (>150%)
+            vol_ratio = zct['vol_ratio']
+            if vol_ratio < 150:
                 continue
 
             # Cluster de 2 niveles
@@ -312,7 +317,12 @@ def backtest_coin(symbol: str) -> list:
                 if abs(cluster['lvl2'] - price) < abs(near_lvl - price):
                     near_lvl = cluster['lvl2']
             dist = abs(near_lvl - price) / near_lvl
+            dist_pct_val = dist * 100
             if dist > PROXIMITY_PCT:
+                continue
+
+            # Filtro 5: distancia mÃ­nima (muy pegado = precio ya lo cruzÃ³)
+            if dist_pct_val < 0.2:
                 continue
 
             # Â¡CondiciÃ³n de alerta cumplida! â calcular resultado
@@ -340,7 +350,7 @@ def backtest_coin(symbol: str) -> list:
     return results
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  ANÃLISIS DE RESULTADOS
 # ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def win_rate(subset: list) -> float:
