@@ -27,6 +27,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python zct_scanner/backtest.py
 
+      - name: Show CSV results
+        if: always()
+        run: |
+          echo "=== CSV_START ==="
+          cat zct_scanner/backtest_results.csv || echo "no csv found"
+          echo "=== CSV_END ==="
+
       - name: Upload CSV de resultados
         if: always()
         uses: actions/upload-artifact@v4
