@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-ZCT Backtester v3 — Testea dos estrategias en paralelo:
+ZCT Backtester v4 — Filtros estrictos buscando 50%+ WR con RR 2:1
 
-  BREAKOUT  : nivel como punto de ruptura. Entrada DESPUES de que el precio
-              cierre al otro lado del nivel (simula confirmacion real).
-              Filtros: crosses <= 1, vol spike >150%, MA compatible.
+  BREAKOUT  : solo LONG, MA up, vol >= 200%, espera max 3 velas.
+              Requiere vela de entrada alcista (close > open).
 
-  MR        : nivel como punto de rechazo (mean reversion). Entrada en la
-              aproximacion, direccion INVERTIDA (resistencia -> SHORT,
-              soporte -> LONG).
-              Filtros: crosses >= 5, vol plano <115%, MA lateral.
+  MR        : solo LONG (rebote en soporte), levels de soporte
+              (P4HL, P1HL, P15mL, PDL), crosses >= 7, vol < 100%.
+
+  SL = 1%   TP = 2%   (RR 2:1 — rentable con >33% WR)
+  Objetivo: 50%+ WR
 
 Uso: python backtest.py
 Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (env vars)
@@ -26,25 +26,29 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 # ══════════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════════
-PROXIMITY_PCT   = 0.005
-MIN_DIST_PCT    = 0.20
-SL_PCT          = 0.02
-TP_PCT          = SL_PCT * 3.0
+PROXIMITY_PCT   = 0.005       # 0.5% de distancia al nivel
+MIN_DIST_PCT    = 0.20        # distancia mínima al nivel (%)
+SL_PCT          = 0.01        # Stop Loss 1%
+TP_PCT          = SL_PCT * 2  # Take Profit 2% (RR 2:1)
 SMMA_LEN        = 30
 VOL_MA_LEN      = 20
 CROSS_LB        = 50
 MA_DIR_LB       = 5
 MA_DIR_THR      = 0.08
 
-OUTCOME_CANDLES = 32
+OUTCOME_CANDLES = 32          # 8h de ventana para que el trade resuelva
 WARMUP_CANDLES  = SMMA_LEN + CROSS_LB + MA_DIR_LB + 5
 CHANGE_LB       = 96
 
+# BREAKOUT — solo LONG con momentum real
 BKOUT_MAX_CROSSES = 1
-BKOUT_MIN_VOL     = 150
-BKOUT_MAX_WAIT    = 8
-MR_MIN_CROSSES    = 5
-MR_MAX_VOL        = 115
+BKOUT_MIN_VOL     = 200       # vol spike mínimo 200% (antes 150%)
+BKOUT_MAX_WAIT    = 3         # esperar max 3 velas el cierre sobre el nivel (antes 8)
+
+# MR — solo LONG en niveles de soporte
+MR_MIN_CROSSES    = 7         # más cruces = más lateral (antes 5)
+MR_MAX_VOL        = 100       # vol más plano (antes 115%)
+MR_SUPPORT_LEVELS = {'P4HL', 'P1HL', 'P15mL', 'PDL'}  # solo soportes
 MR_MA_DIRS        = {'sideways'}
 
 INTERVAL_MAP = {'15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1'}
@@ -115,7 +119,7 @@ def get_ma_direction(ma, lb=5):
     return 'sideways'
 
 
-def analyze_zct_window(closes, amounts):
+def analyze_zct_window(closes, opens, amounts):
     ma = calc_smma(closes, SMMA_LEN)
     if not ma:
         return {}
@@ -123,7 +127,13 @@ def analyze_zct_window(closes, amounts):
     direction = get_ma_direction(ma, MA_DIR_LB)
     vol_ma    = sum(amounts[-VOL_MA_LEN:]) / VOL_MA_LEN if len(amounts) >= VOL_MA_LEN else None
     vol_ratio = amounts[-1] / vol_ma * 100 if vol_ma else 100.0
-    return {'crosses': crosses, 'direction': direction, 'vol_ratio': vol_ratio}
+    bullish_candle = closes[-1] > opens[-1] if opens else True
+    return {
+        'crosses': crosses,
+        'direction': direction,
+        'vol_ratio': vol_ratio,
+        'bullish_candle': bullish_candle,
+    }
 
 
 # ══════════════════════════════════════════════════════════
@@ -197,6 +207,7 @@ def backtest_coin(symbol):
         return []
 
     closes  = d15m['close']
+    opens   = d15m.get('open', closes)
     highs   = d15m['high']
     lows    = d15m['low']
     amounts = d15m.get('amount', d15m.get('vol', [1.0] * len(closes)))
@@ -213,13 +224,14 @@ def backtest_coin(symbol):
         if price <= 0:
             continue
 
-        zct = analyze_zct_window(closes[:idx+1], amounts[:idx+1])
+        zct = analyze_zct_window(closes[:idx+1], opens[:idx+1], amounts[:idx+1])
         if not zct:
             continue
 
-        crosses   = zct['crosses']
-        vol_ratio = zct['vol_ratio']
-        ma_dir    = zct['direction']
+        crosses        = zct['crosses']
+        vol_ratio      = zct['vol_ratio']
+        ma_dir         = zct['direction']
+        bullish_candle = zct['bullish_candle']
 
         candle_time = times[idx] if idx < len(times) else 0
         levels = compute_levels_at(candle_time, d1, d4h, d1h, d15m)
@@ -239,70 +251,67 @@ def backtest_coin(symbol):
 
             ts_str = datetime.utcfromtimestamp(candle_time).strftime('%m-%d %H:%M') if candle_time else '?'
 
-            # ─── BREAKOUT ───────────────────────────────────────
-            if crosses <= BKOUT_MAX_CROSSES and vol_ratio >= BKOUT_MIN_VOL:
-                if lvl_price > price:
-                    bk_dir = 'LONG'
-                    ma_ok  = (ma_dir != 'down')
-                else:
-                    bk_dir = 'SHORT'
-                    ma_ok  = (ma_dir != 'up')
+            # ─── BREAKOUT LONG únicamente ────────────────────────
+            if (crosses <= BKOUT_MAX_CROSSES
+                    and vol_ratio >= BKOUT_MIN_VOL
+                    and ma_dir == 'up'
+                    and lvl_price > price
+                    and bullish_candle):
 
-                if ma_ok:
-                    cd_key = (lvl_name, 'BKOUT', bk_dir)
-                    if cd_key not in cd_bkout or (idx - cd_bkout[cd_key]) >= 16:
-                        entry_idx = None
-                        for j in range(1, BKOUT_MAX_WAIT + 1):
-                            if idx + j >= n:
-                                break
-                            if bk_dir == 'LONG' and closes[idx + j] > lvl_price:
-                                entry_idx = idx + j
-                                break
-                            if bk_dir == 'SHORT' and closes[idx + j] < lvl_price:
-                                entry_idx = idx + j
-                                break
+                cd_key = (lvl_name, 'BKOUT', 'LONG')
+                if cd_key not in cd_bkout or (idx - cd_bkout[cd_key]) >= 16:
+                    entry_idx = None
+                    for j in range(1, BKOUT_MAX_WAIT + 1):
+                        if idx + j >= n:
+                            break
+                        if closes[idx + j] > lvl_price:
+                            entry_idx = idx + j
+                            break
 
-                        if entry_idx is not None:
-                            ep = closes[entry_idx]
-                            fh = highs[entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
-                            fl = lows [entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
-                            if len(fh) >= 4:
-                                out = simulate_outcome(bk_dir, ep, fh, fl)
-                                if out != 'TIMEOUT':
-                                    cd_bkout[cd_key] = idx
-                                    results.append({
-                                        'strategy':   'BREAKOUT',
-                                        'symbol':     symbol,
-                                        'ts':         ts_str,
-                                        'direction':  bk_dir,
-                                        'level':      lvl_name,
-                                        'crosses':    crosses,
-                                        'ma_dir':     ma_dir,
-                                        'vol_ratio':  round(vol_ratio, 1),
-                                        'dist_pct':   round(dist_pct_val, 3),
-                                        'change_pct': round(change_pct, 1),
-                                        'outcome':    out,
-                                    })
+                    if entry_idx is not None:
+                        ep = closes[entry_idx]
+                        fh = highs[entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
+                        fl = lows [entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
+                        if len(fh) >= 4:
+                            out = simulate_outcome('LONG', ep, fh, fl)
+                            if out != 'TIMEOUT':
+                                cd_bkout[cd_key] = idx
+                                results.append({
+                                    'strategy':   'BREAKOUT',
+                                    'symbol':     symbol,
+                                    'ts':         ts_str,
+                                    'direction':  'LONG',
+                                    'level':      lvl_name,
+                                    'crosses':    crosses,
+                                    'ma_dir':     ma_dir,
+                                    'vol_ratio':  round(vol_ratio, 1),
+                                    'dist_pct':   round(dist_pct_val, 3),
+                                    'change_pct': round(change_pct, 1),
+                                    'outcome':    out,
+                                })
 
-            # ─── MEAN REVERSION ─────────────────────────────────
-            if crosses >= MR_MIN_CROSSES and vol_ratio < MR_MAX_VOL and ma_dir in MR_MA_DIRS:
-                mr_dir = 'SHORT' if lvl_price > price else 'LONG'
+            # ─── MR LONG en soportes únicamente ─────────────────
+            if (crosses >= MR_MIN_CROSSES
+                    and vol_ratio < MR_MAX_VOL
+                    and ma_dir in MR_MA_DIRS
+                    and lvl_name in MR_SUPPORT_LEVELS
+                    and lvl_price < price):
 
-                cd_key = (lvl_name, 'MR', mr_dir)
+                cd_key = (lvl_name, 'MR', 'LONG')
                 if cd_key not in cd_mr or (idx - cd_mr[cd_key]) >= 16:
                     if idx + 1 < n:
                         ep = closes[idx + 1]
                         fh = highs[idx+2 : idx+2+OUTCOME_CANDLES]
                         fl = lows [idx+2 : idx+2+OUTCOME_CANDLES]
                         if len(fh) >= 4:
-                            out = simulate_outcome(mr_dir, ep, fh, fl)
+                            out = simulate_outcome('LONG', ep, fh, fl)
                             if out != 'TIMEOUT':
                                 cd_mr[cd_key] = idx
                                 results.append({
                                     'strategy':   'MR',
                                     'symbol':     symbol,
                                     'ts':         ts_str,
-                                    'direction':  mr_dir,
+                                    'direction':  'LONG',
                                     'level':      lvl_name,
                                     'crosses':    crosses,
                                     'ma_dir':     ma_dir,
@@ -331,15 +340,6 @@ def analyze_strategy(rows, label):
     wins  = sum(1 for r in rows if r['outcome'] == 'WIN')
     wr    = wins / total * 100
 
-    def brk(key, bins):
-        out = {}
-        for lo, hi, lbl in bins:
-            sub = [r for r in rows if lo <= r[key] < hi]
-            if sub:
-                w = sum(1 for r in sub if r['outcome'] == 'WIN')
-                out[lbl] = (w, len(sub), w / len(sub) * 100)
-        return out
-
     lvl_groups = {
         'PDH/PDL':  ('PDH', 'PDL'),
         'P4H H/L':  ('P4HH', 'P4HL'),
@@ -353,25 +353,28 @@ def analyze_strategy(rows, label):
             w = sum(1 for r in sub if r['outcome'] == 'WIN')
             by_level[lbl] = (w, len(sub), w / len(sub) * 100)
 
-    by_dir = {}
-    for d in ('LONG', 'SHORT'):
-        sub = [r for r in rows if r['direction'] == d]
+    vol_bins = [(200, 250, '200-250%'), (250, 300, '250-300%'),
+                (300, 400, '300-400%'), (400, 9999, '400%+')]
+    by_vol = {}
+    for lo, hi, lbl in vol_bins:
+        sub = [r for r in rows if lo <= r['vol_ratio'] < hi]
         if sub:
             w = sum(1 for r in sub if r['outcome'] == 'WIN')
-            by_dir[d] = (w, len(sub), w / len(sub) * 100)
+            by_vol[lbl] = (w, len(sub), w / len(sub) * 100)
+
+    by_dist = {}
+    dist_bins = [(0.20, 0.30, '0.2-0.3%'), (0.30, 0.40, '0.3-0.4%'), (0.40, 0.51, '0.4-0.5%')]
+    for lo, hi, lbl in dist_bins:
+        sub = [r for r in rows if lo <= r['dist_pct'] < hi]
+        if sub:
+            w = sum(1 for r in sub if r['outcome'] == 'WIN')
+            by_dist[lbl] = (w, len(sub), w / len(sub) * 100)
 
     return {
         'label': label, 'total': total, 'wins': wins, 'wr': wr,
-        'by_ma': {d: (
-            sum(1 for r in rows if r['outcome'] == 'WIN' and r['ma_dir'] == d),
-            sum(1 for r in rows if r['ma_dir'] == d),
-            win_rate([r for r in rows if r['ma_dir'] == d]),
-        ) for d in ('up', 'down', 'sideways') if any(r['ma_dir'] == d for r in rows)},
-        'by_dist': brk('dist_pct', [
-            (0.20, 0.30, '0.2-0.3%'), (0.30, 0.40, '0.3-0.4%'), (0.40, 0.51, '0.4-0.5%'),
-        ]),
+        'by_vol': by_vol,
+        'by_dist': by_dist,
         'by_level': by_level,
-        'by_dir':   by_dir,
     }
 
 
@@ -394,13 +397,12 @@ def fmt_section(title, data):
 def fmt_strategy(a):
     if not a: return ''
     wr    = a['wr']
-    emoji = 'OK' if wr >= 55 else 'MEH' if wr >= 45 else 'BAD'
+    emoji = 'OK' if wr >= 50 else 'MEH' if wr >= 40 else 'BAD'
     lines = [
         f'{emoji} WR {wr:.1f}%  ({a["wins"]}W/{a["total"]-a["wins"]}L / {a["total"]} total)',
-        fmt_section('  Por direccion:', a['by_dir']),
-        fmt_section('  Por MA:', a['by_ma']),
-        fmt_section('  Por distancia:', a['by_dist']),
-        fmt_section('  Por nivel:', a['by_level']),
+        fmt_section('  Por volumen:', a.get('by_vol', {})),
+        fmt_section('  Por distancia:', a.get('by_dist', {})),
+        fmt_section('  Por nivel:', a.get('by_level', {})),
     ]
     return '\n'.join(l for l in lines if l)
 
@@ -410,13 +412,15 @@ def build_report(bkout, mr, n_coins):
     bkout_str = fmt_strategy(bkout) if bkout else 'Sin datos'
     mr_str    = fmt_strategy(mr) if mr else 'Sin datos'
     parts = [
-        f'ZCT Backtest v3 -- {n_coins} monedas * 15m * ~15 dias',
-        f'SL: 2%  TP: 6% (3R)  |  Horizonte: {OUTCOME_CANDLES*15//60}h',
+        f'ZCT Backtest v4 -- {n_coins} monedas * 15m * ~15 dias',
+        f'SL: 1%  TP: 2% (2R)  |  Horizonte: {OUTCOME_CANDLES*15//60}h',
+        'BREAKOUT: LONG + MA up + vol>=200% + vela alcista',
+        'MR: LONG en soportes + crosses>=7 + vol<100%',
         '',
-        '=== BREAKOUT (entrada tras cruzar nivel) ===',
+        '=== BREAKOUT LONG ===',
         bkout_str,
         '',
-        '=== MEAN REVERSION (rechazo en nivel) ===',
+        '=== MR LONG (soporte) ===',
         mr_str,
         '',
         ts,
@@ -446,7 +450,10 @@ def send_telegram(msg):
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
-    log.info('=== ZCT Backtester v3 iniciando ===')
+    log.info('=== ZCT Backtester v4 iniciando ===')
+    log.info(f'SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=2:1')
+    log.info(f'BREAKOUT: LONG solo, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, vela alcista')
+    log.info(f'MR: LONG solo, soportes, crosses>={MR_MIN_CROSSES}, vol<{MR_MAX_VOL}%')
     all_results = []
 
     for i, symbol in enumerate(COINS):
@@ -478,7 +485,7 @@ def main():
     report = build_report(bkout_analysis, mr_analysis, len(COINS))
     log.info('Enviando reporte...')
     send_telegram(report)
-    log.info('=== Backtest v3 completado ===')
+    log.info('=== Backtest v4 completado ===')
 
 
 if __name__ == '__main__':
