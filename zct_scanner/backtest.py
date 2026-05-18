@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-ZCT Backtester v5 — Solo niveles con edge probado (v4 run#11)
+ZCT Backtester v6 — Solo niveles con edge probado (v5 run#12)
 
   BREAKOUT  : solo LONG en P4HH. MA up, vol >= 200%, espera max 3 velas.
               Requiere vela de entrada alcista (close > open).
+              Distancia maxima 0.4% (0.4-0.5% tenia WR 0% en v5).
 
-  MR        : solo LONG en P4HL (y PDL). crosses >= 7, vol < 100%.
+  MR        : solo LONG en P4HL. crosses >= 7, vol < 100%.
+              Eliminado PDL (WR 17% en v5, 2/12 — demasiado ruido en 15m).
 
   SL = 1%   TP = 2%   (RR 2:1 — rentable con >33% WR)
   Objetivo: 50%+ WR
@@ -25,7 +27,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 # ══════════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════════
-PROXIMITY_PCT   = 0.005       # 0.5% de distancia al nivel
+PROXIMITY_PCT   = 0.004       # 0.4% de distancia al nivel (v5: 0.4-0.5% tenia WR 0% en BREAKOUT)
 MIN_DIST_PCT    = 0.20        # distancia mínima al nivel (%)
 SL_PCT          = 0.01        # Stop Loss 1%
 TP_PCT          = SL_PCT * 2  # Take Profit 2% (RR 2:1)
@@ -48,7 +50,7 @@ BKOUT_LEVELS      = {'P4HH'}  # solo P4HH tiene edge real (v4: 80% WR, 5 setups)
 # MR — solo LONG en niveles de soporte
 MR_MIN_CROSSES    = 7         # más cruces = más lateral (antes 5)
 MR_MAX_VOL        = 100       # vol más plano (antes 115%)
-MR_SUPPORT_LEVELS = {'P4HL', 'PDL'}                    # solo los que tienen edge (v4: P4HL 42%, PDL 38%)
+MR_SUPPORT_LEVELS = {'P4HL'}  # solo P4HL (PDL eliminado: WR 17% en v5, 2/12 — demasiado ruido)
 MR_MA_DIRS        = {'sideways'}
 
 INTERVAL_MAP = {'15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1'}
@@ -413,10 +415,10 @@ def build_report(bkout, mr, n_coins):
     bkout_str = fmt_strategy(bkout) if bkout else 'Sin datos'
     mr_str    = fmt_strategy(mr) if mr else 'Sin datos'
     parts = [
-        f'ZCT Backtest v5 -- {n_coins} monedas * 15m * ~15 dias',
+        f'ZCT Backtest v6 -- {n_coins} monedas * 15m * ~15 dias',
         f'SL: 1pct  TP: 2pct (2R)  |  Horizonte: {OUTCOME_CANDLES*15//60}h',
-        'BREAKOUT: LONG solo P4HH + MA up + vol>=200pct',
-        'MR: LONG solo P4HL/PDL + crosses>=7 + vol<100pct',
+        'BREAKOUT: LONG solo P4HH + MA up + vol>=200pct + dist<=0.4pct',
+        'MR: LONG solo P4HL + crosses>=7 + vol<100pct',
         '',
         '=== BREAKOUT LONG ===',
         bkout_str,
@@ -451,10 +453,10 @@ def send_telegram(msg):
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
-    log.info('=== ZCT Backtester v4 iniciando ===')
+    log.info('=== ZCT Backtester v6 iniciando ===')
     log.info(f'SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=2:1')
-    log.info(f'BREAKOUT: LONG solo, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, vela alcista')
-    log.info(f'MR: LONG solo, soportes, crosses>={MR_MIN_CROSSES}, vol<{MR_MAX_VOL}%')
+    log.info(f'BREAKOUT: LONG solo, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, vela alcista, dist<=0.4%')
+    log.info(f'MR: LONG solo P4HL, crosses>={MR_MIN_CROSSES}, vol<{MR_MAX_VOL}%')
     all_results = []
 
     for i, symbol in enumerate(COINS):
@@ -486,7 +488,7 @@ def main():
     report = build_report(bkout_analysis, mr_analysis, len(COINS))
     log.info('Enviando reporte...')
     send_telegram(report)
-    log.info('=== Backtest v4 completado ===')
+    log.info('=== Backtest v6 completado ===')
 
 
 if __name__ == '__main__':
