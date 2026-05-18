@@ -1,189 +1,95 @@
+#!/usr/bin/env python3
 """
-ZCT Scanner v3 — Selección Dinámica de Movers
-Selecciona monedas automáticamente según:
-  - Volumen 24h > $100M
-  - Cambio 1d ≥ +10% → solo LONG
-  - Cambio 1d ≤ -10% → solo SHORT
-Aplica filtros ZCT: cluster de 2 niveles (o 1 si pump ≥30%), 30SMMA, volumen.
-Niveles: PDH/PDL (1d), P4H, P1H, P15m.
+ZCT Backtester v5 — Solo niveles con edge probado (v4 run#11)
 
-Estrategia: Trading From Zero / Koroush AK (ZCT)
-Autor: generado con Claude para Curro / Tradetor
+  BREAKOUT  : solo LONG en P4HH. MA up, vol >= 200%, espera max 3 velas.
+              Requiere vela de entrada alcista (close > open).
+
+  MR        : solo LONG en P4HL (y PDL). crosses >= 7, vol < 100%.
+
+  SL = 1%   TP = 2%   (RR 2:1 — rentable con >33% WR)
+  Objetivo: 50%+ WR
+
+Uso: python backtest.py
+Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (env vars)
 """
 
-import time, logging, os
+import os, time, csv, logging, html as html_mod
 from datetime import datetime, timezone
+
 import requests
 
 log = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # ══════════════════════════════════════════════════════════
-#  CONFIGURACIÓN
+#  CONFIG
 # ══════════════════════════════════════════════════════════
-TELEGRAM_TOKEN   = os.environ['TELEGRAM_TOKEN']
-TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
+PROXIMITY_PCT   = 0.005       # 0.5% de distancia al nivel
+MIN_DIST_PCT    = 0.20        # distancia mínima al nivel (%)
+SL_PCT          = 0.01        # Stop Loss 1%
+TP_PCT          = SL_PCT * 2  # Take Profit 2% (RR 2:1)
+SMMA_LEN        = 30
+VOL_MA_LEN      = 20
+CROSS_LB        = 50
+MA_DIR_LB       = 5
+MA_DIR_THR      = 0.08
 
-# ── Selección de monedas ──────────────────────────────────
-VOL_24H_MIN   = 100_000_000   # $100M mínimo volumen 24h
-CHANGE_THRESH = 10.0          # ±10% en 1d para ser mover
+OUTCOME_CANDLES = 32          # 8h de ventana para que el trade resuelva
+WARMUP_CANDLES  = SMMA_LEN + CROSS_LB + MA_DIR_LB + 5
+CHANGE_LB       = 96
 
-# ── Niveles ZCT ──────────────────────────────────────────
-PROXIMITY_PCT  = 0.005   # alerta cuando precio está a 0.5% de un nivel
-MAX_DIST_PCT   = 15.0    # nivel ignorado si está a más del 15% del precio
-CLUSTER_TOP    = 2.0     # distancia máxima entre 2 niveles (top coins)
-CLUSTER_ALT    = 3.0     # distancia máxima entre 2 niveles (altcoins)
+# BREAKOUT — solo LONG con momentum real
+BKOUT_MAX_CROSSES = 1
+BKOUT_MIN_VOL     = 200       # vol spike mínimo 200%
+BKOUT_MAX_WAIT    = 3         # esperar max 3 velas
+BKOUT_LEVELS      = {'P4HH'}  # solo P4HH tiene edge real (v4: 80% WR, 5 setups)
 
-# ── Trade parameters ──────────────────────────────────────
-SL_PCT    = 0.02    # 2% stop loss máximo
-TP_MULT   = 3.0     # 3R mínimo → TP = SL × 3 = 6%
-LEVERAGE  = 5       # demo
+# MR — solo LONG en niveles de soporte
+MR_MIN_CROSSES    = 7         # más cruces = más lateral (antes 5)
+MR_MAX_VOL        = 100       # vol más plano (antes 115%)
+MR_SUPPORT_LEVELS = {'P4HL', 'PDL'}                    # solo los que tienen edge (v4: P4HL 42%, PDL 38%)
+MR_MA_DIRS        = {'sideways'}
 
-# ── ZCT / MA ──────────────────────────────────────────────
-SMMA_LEN   = 30
-VOL_MA_LEN = 20
-CROSS_LB   = 50     # velas atrás para contar cruces
-MA_DIR_LB  = 5      # velas atrás para detectar dirección MA
-MA_DIR_THR = 0.08   # % mínimo de pendiente para considerarla tendencial
+INTERVAL_MAP = {'15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1'}
 
-# ── Cooldown ──────────────────────────────────────────────
-COOLDOWN_MIN = 60   # minutos entre alertas del mismo símbolo+dirección
+COINS = [
+    'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'SOL_USDT', 'XRP_USDT',
+    'DOGE_USDT', 'ADA_USDT', 'AVAX_USDT', 'LINK_USDT', 'DOT_USDT',
+    'LTC_USDT', 'UNI_USDT', 'ATOM_USDT', 'NEAR_USDT', 'APT_USDT',
+    'ARB_USDT', 'OP_USDT', 'INJ_USDT', 'SUI_USDT', 'TRX_USDT',
+    'TON_USDT', 'WIF_USDT', 'JUP_USDT', 'SEI_USDT', 'PEPE_USDT',
+    'BONK_USDT', 'TIA_USDT', 'PENDLE_USDT', 'FTM_USDT', 'MATIC_USDT',
+]
 
-# ── Top coins (cluster más estricto: 2%) ─────────────────
-TOP_COINS = {'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'SOL_USDT', 'XRP_USDT'}
-
-# ── Pump fuerte: permite nivel único como target ──────────
-STRONG_PUMP_PCT = 30.0  # si |cambio| >= 30%, nivel único permitido
-
-# ── Bear market: alerta de salida anticipada ──────────────
-EARLY_EXIT_DIST = 5.0   # si nivel > 5% del precio, avisar salida anticipada
-
-# ── Intervalos MEXC ──────────────────────────────────────
-INTERVAL_MAP = {
-    '1m':  'Min1',
-    '15m': 'Min15',
-    '1h':  'Min60',
-    '4h':  'Hour4',
-    '1d':  'Day1',
-}
-
-# Estado de cooldowns en memoria
-_cooldowns: dict = {}
+TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
 
 # ══════════════════════════════════════════════════════════
-#  TELEGRAM
+#  API MEXC
 # ══════════════════════════════════════════════════════════
-def send_telegram(msg: str):
-    try:
-        r = requests.post(
-            f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
-            data={
-                'chat_id': TELEGRAM_CHAT_ID,
-                'text': msg,
-                'parse_mode': 'HTML',
-                'disable_web_page_preview': 'true',
-            },
-            timeout=10,
-        )
-        if not r.ok:
-            log.error(f'Telegram error: {r.text}')
-    except Exception as e:
-        log.error(f'Telegram exception: {e}')
-
-
-# ══════════════════════════════════════════════════════════
-#  MEXC API
-# ══════════════════════════════════════════════════════════
-def get_all_tickers() -> list:
-    """Devuelve todos los tickers de futuros MEXC con stats 24h."""
-    try:
-        r = requests.get(
-            'https://contract.mexc.com/api/v1/contract/ticker',
-            timeout=15,
-        )
-        return r.json().get('data', [])
-    except Exception as e:
-        log.error(f'get_all_tickers: {e}')
-        return []
-
-
-def get_klines(symbol: str, interval: str, limit: int = 200):
-    """Devuelve velas OHLCV de MEXC futuros."""
+def get_klines(symbol, interval, limit=200):
     try:
         r = requests.get(
             f'https://contract.mexc.com/api/v1/contract/kline/{symbol}',
             params={'interval': INTERVAL_MAP[interval], 'limit': limit},
-            timeout=10,
+            timeout=12,
         )
         d = r.json().get('data', {})
         if not d or 'close' not in d or not d['close']:
             return None
-        return {k: [float(x) for x in d[k]]
-                for k in ('open', 'close', 'high', 'low', 'vol', 'amount')
-                if k in d}
+        keys = ('open', 'close', 'high', 'low', 'vol', 'amount', 'time')
+        return {k: [float(x) for x in d[k]] for k in keys if k in d}
     except Exception as e:
         log.error(f'{symbol} {interval}: {e}')
         return None
 
 
 # ══════════════════════════════════════════════════════════
-#  SELECCIÓN DE MOVERS
+#  ANALISIS ZCT
 # ══════════════════════════════════════════════════════════
-def get_movers() -> list:
-    """
-    Filtra todos los futuros MEXC y devuelve movers con:
-    - Vol 24h > $100M
-    - Cambio 1d >= +10% (LONG) o <= -10% (SHORT)
-    Ordenados por cambio absoluto descendente.
-    """
-    tickers = get_all_tickers()
-    movers  = []
-
-    for t in tickers:
-        symbol = t.get('symbol', '')
-        if not symbol.endswith('_USDT'):
-            continue
-        try:
-            vol_24h    = float(t.get('amount24', 0) or 0)
-            change_pct = float(t.get('riseFallRate', 0) or 0) * 100
-            price      = float(t.get('lastPrice', 0) or 0)
-        except (ValueError, TypeError):
-            continue
-
-        if vol_24h < VOL_24H_MIN or price <= 0:
-            continue
-
-        if change_pct >= CHANGE_THRESH:
-            direction = 'LONG'
-        elif change_pct <= -CHANGE_THRESH:
-            direction = 'SHORT'
-        else:
-            continue
-
-        movers.append({
-            'symbol':     symbol,
-            'direction':  direction,
-            'change_pct': change_pct,
-            'vol_24h':    vol_24h,
-            'price':      price,
-        })
-
-    movers.sort(key=lambda x: abs(x['change_pct']), reverse=True)
-    n_long  = sum(1 for m in movers if m['direction'] == 'LONG')
-    n_short = sum(1 for m in movers if m['direction'] == 'SHORT')
-    log.info(f'Movers: {len(movers)} ({n_long}L / {n_short}S)')
-    return movers
-
-
-# ══════════════════════════════════════════════════════════
-#  ANÁLISIS TÉCNICO ZCT
-# ══════════════════════════════════════════════════════════
-def calc_smma(closes: list, length: int = 30) -> list:
-    """Smoothed Moving Average (Wilder). Idéntica a la de TradingView."""
+def calc_smma(closes, length=30):
     if len(closes) < length:
         return []
     sma = sum(closes[:length]) / length
@@ -193,8 +99,7 @@ def calc_smma(closes: list, length: int = 30) -> list:
     return result
 
 
-def count_crosses(closes: list, ma: list, lb: int = 50) -> int:
-    """Cuenta cruces del precio con la 30SMMA en las últimas lb velas."""
+def count_crosses(closes, ma, lb=50):
     n = min(lb, len(closes) - 1, len(ma) - 1)
     crosses = 0
     for i in range(1, n + 1):
@@ -205,317 +110,384 @@ def count_crosses(closes: list, ma: list, lb: int = 50) -> int:
     return crosses
 
 
-def get_ma_direction(ma: list, lb: int = 5) -> str:
-    """Devuelve 'up', 'down' o 'sideways' según la pendiente de la MA."""
+def get_ma_direction(ma, lb=5):
     if len(ma) < lb + 1:
         return 'sideways'
     pct = (ma[-1] - ma[-(lb+1)]) / ma[-(lb+1)] * 100
-    if pct > MA_DIR_THR:
-        return 'up'
-    if pct < -MA_DIR_THR:
-        return 'down'
+    if pct > MA_DIR_THR:  return 'up'
+    if pct < -MA_DIR_THR: return 'down'
     return 'sideways'
 
 
-def analyze_zct(closes: list, amounts: list) -> dict:
-    """
-    Aplica los filtros ZCT de medias móviles y volumen.
-    Devuelve dict con crosses, ma_direction, vol_ratio, etc.
-    """
+def analyze_zct_window(closes, opens, amounts):
     ma = calc_smma(closes, SMMA_LEN)
     if not ma:
         return {}
-
     crosses   = count_crosses(closes, ma, CROSS_LB)
     direction = get_ma_direction(ma, MA_DIR_LB)
-
-    vol_ma    = (sum(amounts[-VOL_MA_LEN:]) / VOL_MA_LEN
-                 if len(amounts) >= VOL_MA_LEN else None)
+    vol_ma    = sum(amounts[-VOL_MA_LEN:]) / VOL_MA_LEN if len(amounts) >= VOL_MA_LEN else None
     vol_ratio = amounts[-1] / vol_ma * 100 if vol_ma else 100.0
-
-    mom_ideal = (crosses <= 3 and direction in ('up', 'down') and vol_ratio > 115)
-    mr_ideal  = (crosses >= 7 and direction == 'sideways' and 85 <= vol_ratio <= 115)
-
+    bullish_candle = closes[-1] > opens[-1] if opens else True
     return {
-        'crosses':   crosses,
+        'crosses': crosses,
         'direction': direction,
         'vol_ratio': vol_ratio,
-        'mom_ideal': mom_ideal,
-        'mr_ideal':  mr_ideal,
+        'bullish_candle': bullish_candle,
     }
 
 
 # ══════════════════════════════════════════════════════════
-#  NIVELES ZCT
+#  NIVELES HISTORICOS
 # ══════════════════════════════════════════════════════════
-def get_zct_levels(symbol: str) -> dict:
-    """
-    Obtiene niveles ZCT de la vela anterior en cada timeframe:
-      PDH/PDL   → día anterior   (mayor liquidez, tarda más en activarse)
-      P4HH/P4HL → 4h anterior
-      P1HH/P1HL → 1h anterior
-      P15mH/P15mL → 15m anterior  (excelentes para intradia, 70% de trades)
-    """
+def compute_levels_at(candle_time, d1, d4h, d1h, d15m):
     levels = {}
-    for interval, prefix in [('1d', 'PD'), ('4h', 'P4H'), ('1h', 'P1H'), ('15m', 'P15m')]:
-        k = get_klines(symbol, interval, limit=3)
-        if k and len(k['high']) >= 2:
-            levels[f'{prefix}H'] = k['high'][-2]
-            levels[f'{prefix}L'] = k['low'][-2]
+    if d1 and 'time' in d1:
+        cdate = datetime.utcfromtimestamp(candle_time).date()
+        ph, pl = [], []
+        for i, t in enumerate(d1['time']):
+            if datetime.utcfromtimestamp(t).date() < cdate:
+                ph.append(d1['high'][i])
+                pl.append(d1['low'][i])
+        if ph:
+            levels['PDH'] = ph[-1]
+            levels['PDL'] = pl[-1]
+    if d4h and 'time' in d4h:
+        prev = [(t, h, l) for t, h, l in zip(d4h['time'], d4h['high'], d4h['low']) if t < candle_time]
+        if prev:
+            levels['P4HH'] = prev[-1][1]
+            levels['P4HL'] = prev[-1][2]
+    if d1h and 'time' in d1h:
+        prev = [(t, h, l) for t, h, l in zip(d1h['time'], d1h['high'], d1h['low']) if t < candle_time]
+        if prev:
+            levels['P1HH'] = prev[-1][1]
+            levels['P1HL'] = prev[-1][2]
+    if d15m and 'time' in d15m:
+        prev = [(t, h, l) for t, h, l in zip(d15m['time'], d15m['high'], d15m['low']) if t < candle_time]
+        if prev:
+            levels['P15mH'] = prev[-1][1]
+            levels['P15mL'] = prev[-1][2]
     return levels
 
 
-def find_level_cluster(levels: dict, price: float,
-                       direction: str, symbol: str,
-                       change_pct: float = 0.0):
-    """
-    Busca un cluster de 2 niveles válido:
-      - En la dirección correcta (resistencia para LONG, soporte para SHORT)
-      - Dentro del 15% del precio actual
-      - Separados máximo cluster_pct (2% top coins / 3% altcoins)
+# ══════════════════════════════════════════════════════════
+#  RESULTADO DEL TRADE
+# ══════════════════════════════════════════════════════════
+def simulate_outcome(direction, entry_price, future_highs, future_lows):
+    tp = entry_price * (1 + TP_PCT) if direction == 'LONG' else entry_price * (1 - TP_PCT)
+    sl = entry_price * (1 - SL_PCT) if direction == 'LONG' else entry_price * (1 + SL_PCT)
+    for high, low in zip(future_highs, future_lows):
+        if direction == 'LONG':
+            if high >= tp: return 'WIN'
+            if low  <= sl: return 'LOSS'
+        else:
+            if low  <= tp: return 'WIN'
+            if high >= sl: return 'LOSS'
+    return 'TIMEOUT'
 
-    Excepción nivel único (Anexo 7 del PDF):
-      Si |cambio 1d| >= 30% y no hay cluster, permite 1 nivel solo.
-      Solo cuando la moneda se mueve con fuerza y sin niveles adicionales.
 
-    Devuelve dict con lvl1/lvl2 y flag 'single_level', o None.
-    """
-    cluster_pct = CLUSTER_TOP if symbol in TOP_COINS else CLUSTER_ALT
+# ══════════════════════════════════════════════════════════
+#  BACKTEST POR MONEDA
+# ══════════════════════════════════════════════════════════
+def backtest_coin(symbol):
+    results = []
 
-    candidates = []
-    for name, lvl in levels.items():
-        dist = abs(lvl - price) / price * 100
-        if dist > MAX_DIST_PCT:
+    d15m = get_klines(symbol, '15m', limit=1500)
+    time.sleep(0.15)
+    d1h  = get_klines(symbol, '1h',  limit=500)
+    time.sleep(0.15)
+    d4h  = get_klines(symbol, '4h',  limit=200)
+    time.sleep(0.15)
+    d1   = get_klines(symbol, '1d',  limit=200)
+    time.sleep(0.2)
+
+    min_candles = WARMUP_CANDLES + OUTCOME_CANDLES + BKOUT_MAX_WAIT + 5
+    if not d15m or len(d15m.get('close', [])) < min_candles:
+        n_got = len(d15m['close']) if d15m else 0
+        log.warning(f'{symbol}: datos insuficientes ({n_got} velas 15m)')
+        return []
+
+    closes  = d15m['close']
+    opens   = d15m.get('open', closes)
+    highs   = d15m['high']
+    lows    = d15m['low']
+    amounts = d15m.get('amount', d15m.get('vol', [1.0] * len(closes)))
+    times   = d15m.get('time', [])
+    n       = len(closes)
+
+    cd_bkout = {}
+    cd_mr    = {}
+
+    end_idx = n - OUTCOME_CANDLES - BKOUT_MAX_WAIT - 2
+
+    for idx in range(WARMUP_CANDLES, end_idx):
+        price = closes[idx]
+        if price <= 0:
             continue
-        if direction == 'LONG' and lvl > price:
-            candidates.append((name, lvl))
-        elif direction == 'SHORT' and lvl < price:
-            candidates.append((name, lvl))
 
-    if not candidates:
-        return None
+        zct = analyze_zct_window(closes[:idx+1], opens[:idx+1], amounts[:idx+1])
+        if not zct:
+            continue
 
-    candidates.sort(key=lambda x: abs(x[1] - price))
+        crosses        = zct['crosses']
+        vol_ratio      = zct['vol_ratio']
+        ma_dir         = zct['direction']
+        bullish_candle = zct['bullish_candle']
 
-    # Intentar cluster de 2 niveles (caso normal)
-    for i in range(len(candidates)):
-        for j in range(i + 1, len(candidates)):
-            n1, l1 = candidates[i]
-            n2, l2 = candidates[j]
-            gap = abs(l1 - l2) / min(l1, l2) * 100
-            if gap <= cluster_pct:
-                return {
-                    'lvl1_name':    n1, 'lvl1': l1,
-                    'lvl2_name':    n2, 'lvl2': l2,
-                    'gap_pct':      gap,
-                    'single_level': False,
-                }
+        candle_time = times[idx] if idx < len(times) else 0
+        levels = compute_levels_at(candle_time, d1, d4h, d1h, d15m)
+        if not levels:
+            continue
 
-    # Excepción: pump/dump fuerte (≥30%) → nivel único válido
-    if abs(change_pct) >= STRONG_PUMP_PCT:
-        n1, l1 = candidates[0]
-        return {
-            'lvl1_name':    n1,   'lvl1': l1,
-            'lvl2_name':    None, 'lvl2': None,
-            'gap_pct':      0.0,
-            'single_level': True,
-        }
+        ref_idx    = max(0, idx - CHANGE_LB)
+        change_pct = (price - closes[ref_idx]) / closes[ref_idx] * 100 if closes[ref_idx] > 0 else 0.0
 
-    return None
+        for lvl_name, lvl_price in levels.items():
+            if lvl_price <= 0:
+                continue
+
+            dist_pct_val = abs(lvl_price - price) / price * 100
+            if not (MIN_DIST_PCT <= dist_pct_val <= PROXIMITY_PCT * 100):
+                continue
+
+            ts_str = datetime.utcfromtimestamp(candle_time).strftime('%m-%d %H:%M') if candle_time else '?'
+
+            # ─── BREAKOUT LONG únicamente (solo P4HH) ────────────
+            if (lvl_name in BKOUT_LEVELS
+                    and crosses <= BKOUT_MAX_CROSSES
+                    and vol_ratio >= BKOUT_MIN_VOL
+                    and ma_dir == 'up'
+                    and lvl_price > price
+                    and bullish_candle):
+
+                cd_key = (lvl_name, 'BKOUT', 'LONG')
+                if cd_key not in cd_bkout or (idx - cd_bkout[cd_key]) >= 16:
+                    entry_idx = None
+                    for j in range(1, BKOUT_MAX_WAIT + 1):
+                        if idx + j >= n:
+                            break
+                        if closes[idx + j] > lvl_price:
+                            entry_idx = idx + j
+                            break
+
+                    if entry_idx is not None:
+                        ep = closes[entry_idx]
+                        fh = highs[entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
+                        fl = lows [entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
+                        if len(fh) >= 4:
+                            out = simulate_outcome('LONG', ep, fh, fl)
+                            if out != 'TIMEOUT':
+                                cd_bkout[cd_key] = idx
+                                results.append({
+                                    'strategy':   'BREAKOUT',
+                                    'symbol':     symbol,
+                                    'ts':         ts_str,
+                                    'direction':  'LONG',
+                                    'level':      lvl_name,
+                                    'crosses':    crosses,
+                                    'ma_dir':     ma_dir,
+                                    'vol_ratio':  round(vol_ratio, 1),
+                                    'dist_pct':   round(dist_pct_val, 3),
+                                    'change_pct': round(change_pct, 1),
+                                    'outcome':    out,
+                                })
+
+            # ─── MR LONG en soportes únicamente ─────────────────
+            if (crosses >= MR_MIN_CROSSES
+                    and vol_ratio < MR_MAX_VOL
+                    and ma_dir in MR_MA_DIRS
+                    and lvl_name in MR_SUPPORT_LEVELS
+                    and lvl_price < price):
+
+                cd_key = (lvl_name, 'MR', 'LONG')
+                if cd_key not in cd_mr or (idx - cd_mr[cd_key]) >= 16:
+                    if idx + 1 < n:
+                        ep = closes[idx + 1]
+                        fh = highs[idx+2 : idx+2+OUTCOME_CANDLES]
+                        fl = lows [idx+2 : idx+2+OUTCOME_CANDLES]
+                        if len(fh) >= 4:
+                            out = simulate_outcome('LONG', ep, fh, fl)
+                            if out != 'TIMEOUT':
+                                cd_mr[cd_key] = idx
+                                results.append({
+                                    'strategy':   'MR',
+                                    'symbol':     symbol,
+                                    'ts':         ts_str,
+                                    'direction':  'LONG',
+                                    'level':      lvl_name,
+                                    'crosses':    crosses,
+                                    'ma_dir':     ma_dir,
+                                    'vol_ratio':  round(vol_ratio, 1),
+                                    'dist_pct':   round(dist_pct_val, 3),
+                                    'change_pct': round(change_pct, 1),
+                                    'outcome':    out,
+                                })
+
+    log.info(f'{symbol}: {len(results)} setups')
+    return results
 
 
 # ══════════════════════════════════════════════════════════
-#  CONSTRUCCIÓN DE ALERTA
+#  ANALISIS
 # ══════════════════════════════════════════════════════════
-def build_alert(mover: dict, cluster: dict, zct: dict,
-                near_lvl: float, dist_pct: float) -> str:
-    symbol     = mover['symbol']
-    direction  = mover['direction']
-    price      = mover['price']
-    change_pct = mover['change_pct']
-    vol_24h    = mover['vol_24h']
+def win_rate(subset):
+    if not subset: return 0.0
+    return sum(1 for r in subset if r['outcome'] == 'WIN') / len(subset) * 100
 
-    tp_pct = SL_PCT * TP_MULT
-    if direction == 'LONG':
-        sl, tp        = price * (1 - SL_PCT), price * (1 + tp_pct)
-        d_emoji, d_txt = '🟢', 'LONG'
-    else:
-        sl, tp        = price * (1 + SL_PCT), price * (1 - tp_pct)
-        d_emoji, d_txt = '🔴', 'SHORT'
 
-    fmt    = lambda p: f'{p:,.4f}' if p >= 1 else f'{p:.6f}'
-    chg    = f'+{change_pct:.1f}%' if change_pct > 0 else f'{change_pct:.1f}%'
-    vol_m  = vol_24h / 1_000_000
+def analyze_strategy(rows, label):
+    if not rows:
+        return {}
+    total = len(rows)
+    wins  = sum(1 for r in rows if r['outcome'] == 'WIN')
+    wr    = wins / total * 100
 
-    ma_txt  = {'up': '📈 Alcista', 'down': '📉 Bajista',
-               'sideways': '↔️ Lateral'}[zct['direction']]
-    vol_txt = ('📈 Creciente' if zct['vol_ratio'] > 115
-               else '📉 Decreciente' if zct['vol_ratio'] < 85
-               else '➡️ Plano')
+    lvl_groups = {
+        'PDH/PDL':  ('PDH', 'PDL'),
+        'P4H H/L':  ('P4HH', 'P4HL'),
+        'P1H H/L':  ('P1HH', 'P1HL'),
+        'P15m H/L': ('P15mH', 'P15mL'),
+    }
+    by_level = {}
+    for lbl, names in lvl_groups.items():
+        sub = [r for r in rows if r.get('level', '') in names]
+        if sub:
+            w = sum(1 for r in sub if r['outcome'] == 'WIN')
+            by_level[lbl] = (w, len(sub), w / len(sub) * 100)
 
-    # Bloque de niveles: cluster normal o nivel único (pump fuerte)
-    if cluster['single_level']:
-        levels_txt = (
-            f'📍 Nivel único: {cluster["lvl1_name"]} @ {fmt(cluster["lvl1"])}\n'
-            f'   ⚡ Pump fuerte ({chg}) — nivel único válido'
+    vol_bins = [(200, 250, '200-250%'), (250, 300, '250-300%'),
+                (300, 400, '300-400%'), (400, 9999, '400%+')]
+    by_vol = {}
+    for lo, hi, lbl in vol_bins:
+        sub = [r for r in rows if lo <= r['vol_ratio'] < hi]
+        if sub:
+            w = sum(1 for r in sub if r['outcome'] == 'WIN')
+            by_vol[lbl] = (w, len(sub), w / len(sub) * 100)
+
+    by_dist = {}
+    dist_bins = [(0.20, 0.30, '0.2-0.3%'), (0.30, 0.40, '0.3-0.4%'), (0.40, 0.51, '0.4-0.5%')]
+    for lo, hi, lbl in dist_bins:
+        sub = [r for r in rows if lo <= r['dist_pct'] < hi]
+        if sub:
+            w = sum(1 for r in sub if r['outcome'] == 'WIN')
+            by_dist[lbl] = (w, len(sub), w / len(sub) * 100)
+
+    return {
+        'label': label, 'total': total, 'wins': wins, 'wr': wr,
+        'by_vol': by_vol,
+        'by_dist': by_dist,
+        'by_level': by_level,
+    }
+
+
+# ══════════════════════════════════════════════════════════
+#  REPORTE TELEGRAM
+# ══════════════════════════════════════════════════════════
+def bar(wr):
+    filled = round(wr / 10)
+    return 'X' * filled + '.' * (10 - filled)
+
+
+def fmt_section(title, data):
+    if not data: return ''
+    lines = [title]
+    for label, (w, n, wr) in sorted(data.items(), key=lambda x: -x[1][2]):
+        lines.append(f'  {html_mod.escape(label):<16} {bar(wr)} {wr:.0f}% ({w}/{n})')
+    return '\n'.join(lines)
+
+
+def fmt_strategy(a):
+    if not a: return ''
+    wr    = a['wr']
+    emoji = 'OK' if wr >= 50 else 'MEH' if wr >= 40 else 'BAD'
+    lines = [
+        f'{emoji} WR {wr:.1f}%  ({a["wins"]}W/{a["total"]-a["wins"]}L / {a["total"]} total)',
+        fmt_section('  Por volumen:', a.get('by_vol', {})),
+        fmt_section('  Por distancia:', a.get('by_dist', {})),
+        fmt_section('  Por nivel:', a.get('by_level', {})),
+    ]
+    return '\n'.join(l for l in lines if l)
+
+
+def build_report(bkout, mr, n_coins):
+    ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    bkout_str = fmt_strategy(bkout) if bkout else 'Sin datos'
+    mr_str    = fmt_strategy(mr) if mr else 'Sin datos'
+    parts = [
+        f'ZCT Backtest v5 -- {n_coins} monedas * 15m * ~15 dias',
+        f'SL: 1pct  TP: 2pct (2R)  |  Horizonte: {OUTCOME_CANDLES*15//60}h',
+        'BREAKOUT: LONG solo P4HH + MA up + vol>=200pct',
+        'MR: LONG solo P4HL/PDL + crosses>=7 + vol<100pct',
+        '',
+        '=== BREAKOUT LONG ===',
+        bkout_str,
+        '',
+        '=== MR LONG (soporte) ===',
+        mr_str,
+        '',
+        ts,
+    ]
+    return '\n'.join(p for p in parts if p is not None)
+
+
+def send_telegram(msg):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print(msg)
+        return
+    try:
+        r = requests.post(
+            f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
+            data={'chat_id': TELEGRAM_CHAT_ID, 'text': msg,
+                  'disable_web_page_preview': 'true'},
+            timeout=10,
         )
-    else:
-        levels_txt = (
-            f'📍 Nivel 1: {cluster["lvl1_name"]} @ {fmt(cluster["lvl1"])}\n'
-            f'📍 Nivel 2: {cluster["lvl2_name"]} @ {fmt(cluster["lvl2"])}'
-            f'  ({cluster["gap_pct"]:.1f}% entre niveles)'
-        )
-
-    # Nota bear market: si nivel > 5% del precio, mejor salida anticipada
-    bear_note = ''
-    if dist_pct > EARLY_EXIT_DIST:
-        bear_note = (
-            f'\n⚠️ Nivel a {dist_pct:.1f}% — mercado débil: '
-            f'considerar salida anticipada antes del sweep completo'
-        )
-
-    tv = (f'https://www.tradingview.com/chart/?symbol='
-          f'BINANCE:{symbol.replace("_","")}&interval=240')
-
-    return (
-        f'🔔 <b>{symbol}</b> — Mover ZCT\n\n'
-        f'📊 Cambio 1d: <b>{chg}</b>  ·  Vol24h: <b>${vol_m:.0f}M</b>\n\n'
-        f'{levels_txt}\n\n'
-        f'💰 Precio: {fmt(price)}  →  {dist_pct:.2f}% del nivel\n'
-        f'{bear_note}\n'
-        f'<b>Condiciones ZCT (1m):</b>\n'
-        f'{ma_txt}  ·  🔁 Cruces: {zct["crosses"]}'
-        f'  ·  📊 Vol: {vol_txt} ({zct["vol_ratio"]:.0f}%)\n'
-        f'\n─────────────────\n'
-        f'<b>{d_emoji} {d_txt}  ·  x{LEVERAGE} (demo)</b>\n'
-        f'📥 Entry: {fmt(price)}\n'
-        f'🛑 SL:    {fmt(sl)}  (2% máx)\n'
-        f'🎯 TP:    {fmt(tp)}  (6% = 3R mínimo)\n'
-        f'\n🔗 <a href="{tv}">Ver en TradingView (4H)</a>\n'
-        f'⏰ {datetime.now(timezone.utc).strftime("%H:%M UTC")}'
-    )
+        if not r.ok:
+            log.error(f'Telegram: {r.text}')
+    except Exception as e:
+        log.error(f'Telegram: {e}')
+        print(msg)
 
 
 # ══════════════════════════════════════════════════════════
-#  ANÁLISIS POR SÍMBOLO
+#  MAIN
 # ══════════════════════════════════════════════════════════
-def analyze(mover: dict):
-    symbol    = mover['symbol']
-    direction = mover['direction']
-    price     = mover['price']
+def main():
+    log.info('=== ZCT Backtester v4 iniciando ===')
+    log.info(f'SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=2:1')
+    log.info(f'BREAKOUT: LONG solo, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, vela alcista')
+    log.info(f'MR: LONG solo, soportes, crosses>={MR_MIN_CROSSES}, vol<{MR_MAX_VOL}%')
+    all_results = []
 
-    # Cooldown
-    key = f'{symbol}_{direction}'
-    now = datetime.now(timezone.utc)
-    if key in _cooldowns:
-        elapsed = (now - _cooldowns[key]).total_seconds() / 60
-        if elapsed < COOLDOWN_MIN:
-            return
-
-    # Velas 1m para análisis ZCT
-    k1m = get_klines(symbol, '1m', limit=200)
-    if not k1m:
-        log.warning(f'{symbol}: sin datos 1m')
-        return
-
-    closes  = k1m['close']
-    amounts = k1m.get('amount', k1m['vol'])
-
-    zct = analyze_zct(closes, amounts)
-    if not zct:
-        return
-
-    ma_dir    = zct['direction']
-    crosses   = zct['crosses']
-    vol_ratio = zct['vol_ratio']
-
-    # Filtro 1: MA nunca contra la dirección del trade
-    if direction == 'LONG' and ma_dir == 'down':
-        log.info(f'{symbol}: LONG pero MA bajista → skip')
-        return
-    if direction == 'SHORT' and ma_dir == 'up':
-        log.info(f'{symbol}: SHORT pero MA alcista → skip')
-        return
-
-    # Filtro 2: máximo 1 cruce (2-3 = 0% WR en backtest, >3 = choppy)
-    if crosses > 1:
-        log.info(f'{symbol}: demasiado choppy ({crosses} cruces) → skip')
-        return
-
-    # Filtro 3: volumen spike obligatorio (>150% de la media — único con edge real)
-    if vol_ratio < 150:
-        log.info(f'{symbol}: volumen insuficiente ({vol_ratio:.0f}%) → skip')
-        return
-
-    log.info(f'{symbol}: chg={mover["change_pct"]:.1f}% dir={direction} '
-             f'ma={ma_dir} cruces={crosses} vol={vol_ratio:.0f}%')
-
-    # Niveles ZCT
-    levels = get_zct_levels(symbol)
-    if len(levels) < 2:
-        log.info(f'{symbol}: no hay suficientes niveles')
-        return
-
-    # Cluster de 2 niveles (o 1 si pump fuerte ≥30%)
-    cluster = find_level_cluster(
-        levels, price, direction, symbol,
-        change_pct=mover['change_pct']
-    )
-    if not cluster:
-        log.info(f'{symbol}: no se encontró cluster de niveles')
-        return
-
-    # Proximidad al nivel más cercano del cluster
-    if cluster['single_level'] or cluster['lvl2'] is None:
-        near_lvl = cluster['lvl1']
-    else:
-        near_lvl = (cluster['lvl1']
-                    if abs(cluster['lvl1'] - price) < abs(cluster['lvl2'] - price)
-                    else cluster['lvl2'])
-
-    dist     = abs(near_lvl - price) / near_lvl
-    dist_pct = dist * 100
-
-    if dist > PROXIMITY_PCT:
-        log.info(f'{symbol}: no suficientemente cerca ({dist_pct:.2f}%) → skip')
-        return
-
-    # Filtro 5: distancia mínima al nivel (muy pegado = precio ya lo cruzó)
-    if dist_pct < 0.2:
-        log.info(f'{symbol}: demasiado pegado al nivel ({dist_pct:.3f}%) → skip')
-        return
-
-    # Alerta
-    _cooldowns[key] = now
-    msg = build_alert(mover, cluster, zct, near_lvl, dist_pct)
-    send_telegram(msg)
-    lvl_type = 'nivel único' if cluster['single_level'] else 'cluster 2 niveles'
-    log.info(f'ALERTA → {symbol} {direction} [{lvl_type}]')
-
-
-# ══════════════════════════════════════════════════════════
-#  SCAN PRINCIPAL
-# ══════════════════════════════════════════════════════════
-def scan():
-    log.info('=== Scan iniciado ===')
-    movers = get_movers()
-    if not movers:
-        log.info('Sin movers en este ciclo')
-        return
-    for mover in movers:
+    for i, symbol in enumerate(COINS):
         try:
-            analyze(mover)
-            time.sleep(0.3)
+            log.info(f'[{i+1}/{len(COINS)}] {symbol}')
+            results = backtest_coin(symbol)
+            all_results.extend(results)
         except Exception as e:
-            log.error(f'{mover["symbol"]}: {e}')
-    log.info('=== Scan completado ===')
+            log.error(f'{symbol}: {e}')
+
+    log.info(f'Total setups: {len(all_results)}')
+
+    csv_path = os.path.join(os.path.dirname(__file__), 'backtest_results.csv')
+    fieldnames = ['strategy', 'symbol', 'ts', 'direction', 'level',
+                  'crosses', 'ma_dir', 'vol_ratio', 'dist_pct', 'change_pct', 'outcome']
+    if all_results:
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(all_results)
+        log.info(f'CSV guardado: {csv_path}')
+
+    bkout_rows = [r for r in all_results if r['strategy'] == 'BREAKOUT']
+    mr_rows    = [r for r in all_results if r['strategy'] == 'MR']
+
+    bkout_analysis = analyze_strategy(bkout_rows, 'BREAKOUT')
+    mr_analysis    = analyze_strategy(mr_rows,    'MR')
+
+    report = build_report(bkout_analysis, mr_analysis, len(COINS))
+    log.info('Enviando reporte...')
+    send_telegram(report)
+    log.info('=== Backtest v4 completado ===')
 
 
 if __name__ == '__main__':
-    scan_once = os.environ.get('SCAN_ONCE', '0') == '1'
-    if scan_once:
-        scan()
-    else:
-        while True:
-            scan()
-            time.sleep(300)
+    main()
