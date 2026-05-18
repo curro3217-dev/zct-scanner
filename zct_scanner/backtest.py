@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-ZCT Backtester v4 — Filtros estrictos buscando 50%+ WR con RR 2:1
+ZCT Backtester v5 — Solo niveles con edge probado (v4 run#11)
 
-  BREAKOUT  : solo LONG, MA up, vol >= 200%, espera max 3 velas.
+  BREAKOUT  : solo LONG en P4HH. MA up, vol >= 200%, espera max 3 velas.
               Requiere vela de entrada alcista (close > open).
 
-  MR        : solo LONG (rebote en soporte), levels de soporte
-              (P4HL, P1HL, P15mL, PDL), crosses >= 7, vol < 100%.
+  MR        : solo LONG en P4HL (y PDL). crosses >= 7, vol < 100%.
 
   SL = 1%   TP = 2%   (RR 2:1 — rentable con >33% WR)
   Objetivo: 50%+ WR
@@ -42,13 +41,14 @@ CHANGE_LB       = 96
 
 # BREAKOUT — solo LONG con momentum real
 BKOUT_MAX_CROSSES = 1
-BKOUT_MIN_VOL     = 200       # vol spike mínimo 200% (antes 150%)
-BKOUT_MAX_WAIT    = 3         # esperar max 3 velas el cierre sobre el nivel (antes 8)
+BKOUT_MIN_VOL     = 200       # vol spike mínimo 200%
+BKOUT_MAX_WAIT    = 3         # esperar max 3 velas
+BKOUT_LEVELS      = {'P4HH'}  # solo P4HH tiene edge real (v4: 80% WR, 5 setups)
 
 # MR — solo LONG en niveles de soporte
 MR_MIN_CROSSES    = 7         # más cruces = más lateral (antes 5)
 MR_MAX_VOL        = 100       # vol más plano (antes 115%)
-MR_SUPPORT_LEVELS = {'P4HL', 'P1HL', 'P15mL', 'PDL'}  # solo soportes
+MR_SUPPORT_LEVELS = {'P4HL', 'PDL'}                    # solo los que tienen edge (v4: P4HL 42%, PDL 38%)
 MR_MA_DIRS        = {'sideways'}
 
 INTERVAL_MAP = {'15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1'}
@@ -251,8 +251,9 @@ def backtest_coin(symbol):
 
             ts_str = datetime.utcfromtimestamp(candle_time).strftime('%m-%d %H:%M') if candle_time else '?'
 
-            # ─── BREAKOUT LONG únicamente ────────────────────────
-            if (crosses <= BKOUT_MAX_CROSSES
+            # ─── BREAKOUT LONG únicamente (solo P4HH) ────────────
+            if (lvl_name in BKOUT_LEVELS
+                    and crosses <= BKOUT_MAX_CROSSES
                     and vol_ratio >= BKOUT_MIN_VOL
                     and ma_dir == 'up'
                     and lvl_price > price
@@ -412,10 +413,10 @@ def build_report(bkout, mr, n_coins):
     bkout_str = fmt_strategy(bkout) if bkout else 'Sin datos'
     mr_str    = fmt_strategy(mr) if mr else 'Sin datos'
     parts = [
-        f'ZCT Backtest v4 -- {n_coins} monedas * 15m * ~15 dias',
-        f'SL: 1%  TP: 2% (2R)  |  Horizonte: {OUTCOME_CANDLES*15//60}h',
-        'BREAKOUT: LONG + MA up + vol>=200% + vela alcista',
-        'MR: LONG en soportes + crosses>=7 + vol<100%',
+        f'ZCT Backtest v5 -- {n_coins} monedas * 15m * ~15 dias',
+        f'SL: 1pct  TP: 2pct (2R)  |  Horizonte: {OUTCOME_CANDLES*15//60}h',
+        'BREAKOUT: LONG solo P4HH + MA up + vol>=200pct',
+        'MR: LONG solo P4HL/PDL + crosses>=7 + vol<100pct',
         '',
         '=== BREAKOUT LONG ===',
         bkout_str,
@@ -436,7 +437,7 @@ def send_telegram(msg):
         r = requests.post(
             f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
             data={'chat_id': TELEGRAM_CHAT_ID, 'text': msg,
-                  'parse_mode': 'HTML', 'disable_web_page_preview': 'true'},
+                  'disable_web_page_preview': 'true'},
             timeout=10,
         )
         if not r.ok:
