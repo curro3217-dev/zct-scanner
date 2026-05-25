@@ -4,7 +4,7 @@ ZCT Backtester v7 — Solo BREAKOUT (MR descartado: WR 19% < umbral 33%)
 
   BREAKOUT  : LONG en PDH, P4HH, P1HH, P15mH. MA up, vol >= 120%, espera max 3 velas.
               Requiere vela de entrada alcista (close > open). Distancia max 0.4%.
-              v7: vol bajado de 200% -> 120% para mas muestra. Niveles ampliados.
+              v7: vol bajado de 200% a 120% para mas muestra. Niveles ampliados.
 
   MR descartado: WR 19.2% con RR 2:1 — necesita >33% para breakeven. No tiene edge.
 
@@ -285,8 +285,6 @@ def backtest_coin(symbol):
                                     'outcome':    out,
                                 })
 
-            # MR eliminado: WR 19.2% < 33% necesario para breakeven con RR 2:1
-
     log.info(f'{symbol}: {len(results)} setups')
     return results
 
@@ -347,47 +345,76 @@ def analyze_strategy(rows, label):
 # ══════════════════════════════════════════════════════════
 #  REPORTE TELEGRAM
 # ══════════════════════════════════════════════════════════
-def bar(wr):
-    filled = round(wr / 10)
-    return 'X' * filled + '.' * (10 - filled)
-
-
-def fmt_section(title, data):
-    if not data: return ''
-    lines = [title]
-    for label, (w, n, wr) in sorted(data.items(), key=lambda x: -x[1][2]):
-        lines.append(f'  {html_mod.escape(label):<16} {bar(wr)} {wr:.0f}% ({w}/{n})')
+def fmt_vol_section(by_vol):
+    if not by_vol:
+        return ''
+    lines = ['Por volumen en el momento de la senal:']
+    for lbl, (w, n, wr) in sorted(by_vol.items(), key=lambda x: -x[1][2]):
+        lines.append(f'  {lbl}: {wr:.0f}% de aciertos ({w} ganadas / {n} total)')
     return '\n'.join(lines)
 
 
-def fmt_strategy(a):
-    if not a: return ''
-    wr    = a['wr']
-    emoji = 'OK' if wr >= 50 else 'MEH' if wr >= 40 else 'BAD'
-    lines = [
-        f'{emoji} WR {wr:.1f}%  ({a["wins"]}W/{a["total"]-a["wins"]}L / {a["total"]} total)',
-        fmt_section('  Por volumen:', a.get('by_vol', {})),
-        fmt_section('  Por distancia:', a.get('by_dist', {})),
-        fmt_section('  Por nivel:', a.get('by_level', {})),
-    ]
-    return '\n'.join(l for l in lines if l)
+def fmt_level_section(by_level):
+    if not by_level:
+        return ''
+    level_names = {
+        'PDH':      'Maximo del dia anterior',
+        'P4H H/L':  'Maximo de la ultima vela de 4h',
+        'P1H H/L':  'Maximo de la ultima vela de 1h',
+        'P15m H/L': 'Maximo de la ultima vela de 15m',
+    }
+    lines = ['Por nivel de precio usado:']
+    for lbl, (w, n, wr) in sorted(by_level.items(), key=lambda x: -x[1][2]):
+        nombre = level_names.get(lbl, lbl)
+        lines.append(f'  {nombre}: {wr:.0f}% de aciertos ({w} ganadas / {n} total)')
+    return '\n'.join(lines)
 
 
 def build_report(bkout, n_coins):
     ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-    bkout_str = fmt_strategy(bkout) if bkout else 'Sin datos'
+
+    if bkout:
+        total = bkout['total']
+        wins  = bkout['wins']
+        wr    = bkout['wr']
+
+        if total < 20:
+            conclusion = 'AVISO: Solo ' + str(total) + ' operaciones — datos insuficientes para concluir nada'
+        elif wr >= 50:
+            conclusion = 'RENTABLE: ' + str(round(wr)) + '% de aciertos con ' + str(total) + ' operaciones'
+        elif wr >= 33:
+            conclusion = 'EN EL LIMITE: ' + str(round(wr)) + '% de aciertos con ' + str(total) + ' operaciones'
+        else:
+            conclusion = 'NO RENTABLE: solo ' + str(round(wr)) + '% de aciertos con ' + str(total) + ' operaciones'
+
+        bkout_lines = [
+            'Aciertos: ' + str(round(wr)) + '% — ' + str(wins) + ' ganadas / ' + str(total - wins) + ' perdidas / ' + str(total) + ' operaciones',
+            conclusion,
+            '',
+            fmt_vol_section(bkout.get('by_vol', {})),
+            '',
+            fmt_level_section(bkout.get('by_level', {})),
+        ]
+        bkout_str = '\n'.join(l for l in bkout_lines if l is not None)
+    else:
+        bkout_str = 'Sin datos'
+
     parts = [
-        f'ZCT Backtest v7 -- {n_coins} monedas * 15m * ~15 dias',
-        f'SL: 1pct  TP: 2pct (2R)  |  Horizonte: {OUTCOME_CANDLES*15//60}h',
-        f'BREAKOUT: LONG PDH+P4HH+P1HH+P15mH + MA up + vol>={BKOUT_MIN_VOL}pct + dist<=0.4pct',
-        'MR: descartado (WR 19% < 33% breakeven)',
+        '📊 ZCT Backtest',
+        'Analizadas ' + str(n_coins) + ' monedas durante los ultimos 15 dias',
+        'Stop Loss 1% · Take Profit 2%',
+        'Para ganar dinero necesitas acertar mas del 33% de las veces',
         '',
-        '=== BREAKOUT LONG ===',
+        'ESTRATEGIA BREAKOUT (operar el impulso)',
         bkout_str,
+        '',
+        'ESTRATEGIA CONTRATENDENCIA',
+        'Aciertos: 19% — 73 operaciones — ABANDONADA',
+        'No llega al minimo del 33% para ser rentable',
         '',
         ts,
     ]
-    return '\n'.join(p for p in parts if p is not None)
+    return '\n'.join(parts)
 
 
 def send_telegram(msg):
@@ -414,7 +441,7 @@ def send_telegram(msg):
 def main():
     log.info('=== ZCT Backtester v7 iniciando ===')
     log.info(f'SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=2:1')
-    log.info(f'BREAKOUT: LONG, niveles={BKOUT_LEVELS}, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, vela alcista, dist<=0.4%')
+    log.info(f'BREAKOUT: LONG, niveles={BKOUT_LEVELS}, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, dist<=0.4%')
     log.info('MR: descartado (WR 19% < 33% breakeven con RR 2:1)')
     all_results = []
 
