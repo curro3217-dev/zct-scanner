@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-ZCT Backtester v6 — Solo niveles con edge probado (v5 run#12)
+ZCT Backtester v7 — Solo BREAKOUT (MR descartado: WR 19% < umbral 33%)
 
-  BREAKOUT  : solo LONG en P4HH. MA up, vol >= 200%, espera max 3 velas.
-              Requiere vela de entrada alcista (close > open).
-              Distancia maxima 0.4% (0.4-0.5% tenia WR 0% en v5).
+  BREAKOUT  : LONG en PDH, P4HH, P1HH, P15mH. MA up, vol >= 120%, espera max 3 velas.
+              Requiere vela de entrada alcista (close > open). Distancia max 0.4%.
+              v7: vol bajado de 200% -> 120% para mas muestra. Niveles ampliados.
 
-  MR        : solo LONG en P4HL. crosses >= 7, vol < 100%.
-              Eliminado PDL (WR 17% en v5, 2/12 — demasiado ruido en 15m).
+  MR descartado: WR 19.2% con RR 2:1 — necesita >33% para breakeven. No tiene edge.
 
   SL = 1%   TP = 2%   (RR 2:1 — rentable con >33% WR)
   Objetivo: 50%+ WR
@@ -27,8 +26,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 # ══════════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════════
-PROXIMITY_PCT   = 0.004       # 0.4% de distancia al nivel (v5: 0.4-0.5% tenia WR 0% en BREAKOUT)
-MIN_DIST_PCT    = 0.20        # distancia mínima al nivel (%)
+PROXIMITY_PCT   = 0.004       # 0.4% de distancia al nivel
+MIN_DIST_PCT    = 0.20        # distancia minima al nivel (%)
 SL_PCT          = 0.01        # Stop Loss 1%
 TP_PCT          = SL_PCT * 2  # Take Profit 2% (RR 2:1)
 SMMA_LEN        = 30
@@ -43,15 +42,9 @@ CHANGE_LB       = 96
 
 # BREAKOUT — solo LONG con momentum real
 BKOUT_MAX_CROSSES = 1
-BKOUT_MIN_VOL     = 200       # vol spike mínimo 200%
+BKOUT_MIN_VOL     = 120       # vol minimo 120% (bajado de 200% — scanner llega tarde al spike)
 BKOUT_MAX_WAIT    = 3         # esperar max 3 velas
-BKOUT_LEVELS      = {'P4HH'}  # solo P4HH tiene edge real (v4: 80% WR, 5 setups)
-
-# MR — solo LONG en niveles de soporte
-MR_MIN_CROSSES    = 7         # más cruces = más lateral (antes 5)
-MR_MAX_VOL        = 100       # vol más plano (antes 115%)
-MR_SUPPORT_LEVELS = {'P4HL'}  # solo P4HL (PDL eliminado: WR 17% en v5, 2/12 — demasiado ruido)
-MR_MA_DIRS        = {'sideways'}
+BKOUT_LEVELS      = {'PDH', 'P4HH', 'P1HH', 'P15mH'}  # todos los highs (mas muestra)
 
 INTERVAL_MAP = {'15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1'}
 
@@ -217,7 +210,6 @@ def backtest_coin(symbol):
     n       = len(closes)
 
     cd_bkout = {}
-    cd_mr    = {}
 
     end_idx = n - OUTCOME_CANDLES - BKOUT_MAX_WAIT - 2
 
@@ -253,7 +245,7 @@ def backtest_coin(symbol):
 
             ts_str = datetime.utcfromtimestamp(candle_time).strftime('%m-%d %H:%M') if candle_time else '?'
 
-            # ─── BREAKOUT LONG únicamente (solo P4HH) ────────────
+            # BREAKOUT LONG
             if (lvl_name in BKOUT_LEVELS
                     and crosses <= BKOUT_MAX_CROSSES
                     and vol_ratio >= BKOUT_MIN_VOL
@@ -293,36 +285,7 @@ def backtest_coin(symbol):
                                     'outcome':    out,
                                 })
 
-            # ─── MR LONG en soportes únicamente ─────────────────
-            if (crosses >= MR_MIN_CROSSES
-                    and vol_ratio < MR_MAX_VOL
-                    and ma_dir in MR_MA_DIRS
-                    and lvl_name in MR_SUPPORT_LEVELS
-                    and lvl_price < price):
-
-                cd_key = (lvl_name, 'MR', 'LONG')
-                if cd_key not in cd_mr or (idx - cd_mr[cd_key]) >= 16:
-                    if idx + 1 < n:
-                        ep = closes[idx + 1]
-                        fh = highs[idx+2 : idx+2+OUTCOME_CANDLES]
-                        fl = lows [idx+2 : idx+2+OUTCOME_CANDLES]
-                        if len(fh) >= 4:
-                            out = simulate_outcome('LONG', ep, fh, fl)
-                            if out != 'TIMEOUT':
-                                cd_mr[cd_key] = idx
-                                results.append({
-                                    'strategy':   'MR',
-                                    'symbol':     symbol,
-                                    'ts':         ts_str,
-                                    'direction':  'LONG',
-                                    'level':      lvl_name,
-                                    'crosses':    crosses,
-                                    'ma_dir':     ma_dir,
-                                    'vol_ratio':  round(vol_ratio, 1),
-                                    'dist_pct':   round(dist_pct_val, 3),
-                                    'change_pct': round(change_pct, 1),
-                                    'outcome':    out,
-                                })
+            # MR eliminado: WR 19.2% < 33% necesario para breakeven con RR 2:1
 
     log.info(f'{symbol}: {len(results)} setups')
     return results
@@ -344,7 +307,7 @@ def analyze_strategy(rows, label):
     wr    = wins / total * 100
 
     lvl_groups = {
-        'PDH/PDL':  ('PDH', 'PDL'),
+        'PDH':      ('PDH',),
         'P4H H/L':  ('P4HH', 'P4HL'),
         'P1H H/L':  ('P1HH', 'P1HL'),
         'P15m H/L': ('P15mH', 'P15mL'),
@@ -356,8 +319,8 @@ def analyze_strategy(rows, label):
             w = sum(1 for r in sub if r['outcome'] == 'WIN')
             by_level[lbl] = (w, len(sub), w / len(sub) * 100)
 
-    vol_bins = [(200, 250, '200-250%'), (250, 300, '250-300%'),
-                (300, 400, '300-400%'), (400, 9999, '400%+')]
+    vol_bins = [(120, 150, '120-150%'), (150, 200, '150-200%'),
+                (200, 300, '200-300%'), (300, 9999, '300%+')]
     by_vol = {}
     for lo, hi, lbl in vol_bins:
         sub = [r for r in rows if lo <= r['vol_ratio'] < hi]
@@ -410,21 +373,17 @@ def fmt_strategy(a):
     return '\n'.join(l for l in lines if l)
 
 
-def build_report(bkout, mr, n_coins):
+def build_report(bkout, n_coins):
     ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
     bkout_str = fmt_strategy(bkout) if bkout else 'Sin datos'
-    mr_str    = fmt_strategy(mr) if mr else 'Sin datos'
     parts = [
-        f'ZCT Backtest v6 -- {n_coins} monedas * 15m * ~15 dias',
+        f'ZCT Backtest v7 -- {n_coins} monedas * 15m * ~15 dias',
         f'SL: 1pct  TP: 2pct (2R)  |  Horizonte: {OUTCOME_CANDLES*15//60}h',
-        'BREAKOUT: LONG solo P4HH + MA up + vol>=200pct + dist<=0.4pct',
-        'MR: LONG solo P4HL + crosses>=7 + vol<100pct',
+        f'BREAKOUT: LONG PDH+P4HH+P1HH+P15mH + MA up + vol>={BKOUT_MIN_VOL}pct + dist<=0.4pct',
+        'MR: descartado (WR 19% < 33% breakeven)',
         '',
         '=== BREAKOUT LONG ===',
         bkout_str,
-        '',
-        '=== MR LONG (soporte) ===',
-        mr_str,
         '',
         ts,
     ]
@@ -453,10 +412,10 @@ def send_telegram(msg):
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
-    log.info('=== ZCT Backtester v6 iniciando ===')
+    log.info('=== ZCT Backtester v7 iniciando ===')
     log.info(f'SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=2:1')
-    log.info(f'BREAKOUT: LONG solo, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, vela alcista, dist<=0.4%')
-    log.info(f'MR: LONG solo P4HL, crosses>={MR_MIN_CROSSES}, vol<{MR_MAX_VOL}%')
+    log.info(f'BREAKOUT: LONG, niveles={BKOUT_LEVELS}, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, vela alcista, dist<=0.4%')
+    log.info('MR: descartado (WR 19% < 33% breakeven con RR 2:1)')
     all_results = []
 
     for i, symbol in enumerate(COINS):
@@ -480,15 +439,12 @@ def main():
         log.info(f'CSV guardado: {csv_path}')
 
     bkout_rows = [r for r in all_results if r['strategy'] == 'BREAKOUT']
-    mr_rows    = [r for r in all_results if r['strategy'] == 'MR']
-
     bkout_analysis = analyze_strategy(bkout_rows, 'BREAKOUT')
-    mr_analysis    = analyze_strategy(mr_rows,    'MR')
 
-    report = build_report(bkout_analysis, mr_analysis, len(COINS))
+    report = build_report(bkout_analysis, len(COINS))
     log.info('Enviando reporte...')
     send_telegram(report)
-    log.info('=== Backtest v6 completado ===')
+    log.info('=== Backtest v7 completado ===')
 
 
 if __name__ == '__main__':
