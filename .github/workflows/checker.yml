@@ -1,19 +1,18 @@
-name: ZCT Scanner
+name: ZCT Checker
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # cada 5 minutos
+    - cron: '0 */4 * * *'   # cada 4 horas (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
   workflow_dispatch:          # también se puede lanzar a mano desde GitHub
 
 jobs:
-  scan:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 4        # se mata antes de que llegue el siguiente ciclo
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
         with:
-          # Token con permisos de escritura para poder hacer push del log
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@v5
@@ -23,18 +22,16 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Ejecutar scanner (ciclo único)
+      - name: Verificar resultados de alertas
         env:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SCAN_ONCE: '1'
-        run: python main.py
+        run: python checker.py
 
-      - name: Guardar alerts_log.json en el repositorio
+      - name: Guardar alerts_log.json actualizado en el repositorio
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
           git add alerts_log.json || true
-          # Solo hacer commit si hay cambios (es decir, si se generó alguna alerta)
-          git diff --cached --quiet || git commit -m "chore: actualizar alerts_log [skip ci]"
+          git diff --cached --quiet || git commit -m "chore: checker actualiza resultados [skip ci]"
           git push || true

@@ -1,19 +1,20 @@
 """
-ZCT Scanner v6 — Selección Dinámica de Movers
+ZCT Scanner v8 — Selección Dinámica de Movers
 Selecciona monedas automáticamente según:
   - Volumen 24h > $20M (rebajado de $100M para mejor cobertura MEXC)
   - Cambio 1d ≥ +10% → solo LONG
   - Cambio 1d ≤ -10% → solo SHORT
-Aplica filtros ZCT: 15m, vol>=120%, vela alcista, cruces<=1, dist<=0.4%.
-Niveles: PDH/PDL (1d), P4H, P1H, P15m.
-Cambios v6: VOL_24H_MIN $100M→$20M, vol_ratio 200%→120%.
+Aplica filtros ZCT: 15m, vol 120-200%, vela alcista, cruces<=1, dist<=0.4%.
+Niveles: P4H y P15m (backtest v7: WR 67% y 64%. P1H y PDH descartados).
+Cambios v8: vol max 200%, niveles reducidos a P4H+P15m.
 
 Estrategia: Trading From Zero / Koroush AK (ZCT)
 Autor: generado con Claude para Curro / Tradetor
 """
 
-import time, logging, os
+import time, logging, os, json
 from datetime import datetime, timezone
+from pathlib import Path
 import requests
 
 log = logging.getLogger(__name__)
@@ -73,6 +74,9 @@ INTERVAL_MAP = {
 
 # Estado de cooldowns en memoria
 _cooldowns: dict = {}
+
+# Ruta al log de alertas (se guarda junto a main.py, en la raíz del repo)
+ALERTS_LOG = Path(__file__).parent / 'alerts_log.json'
 
 
 # ══════════════════════════════════════════════════════════
@@ -137,7 +141,7 @@ def get_klines(symbol: str, interval: str, limit: int = 200):
 def get_movers() -> list:
     """
     Filtra todos los futuros MEXC y devuelve movers con:
-    - Vol 24h > $20M
+    - Vol 24h > $100M
     - Cambio 1d >= +10% (LONG) o <= -10% (SHORT)
     Ordenados por cambio absoluto descendente.
     """
@@ -258,7 +262,8 @@ def get_zct_levels(symbol: str) -> dict:
       P15mH/P15mL → 15m anterior  (excelentes para intradia, 70% de trades)
     """
     levels = {}
-    for interval, prefix in [('1d', 'PD'), ('4h', 'P4H'), ('1h', 'P1H'), ('15m', 'P15m')]:
+    # Solo 4h y 15m — backtest v7: WR 67% y 64%. P1H (41%) y PDH (25%) descartados.
+    for interval, prefix in [('4h', 'P4H'), ('15m', 'P15m')]:
         k = get_klines(symbol, interval, limit=3)
         if k and len(k['high']) >= 2:
             levels[f'{prefix}H'] = k['high'][-2]
@@ -323,6 +328,67 @@ def find_level_cluster(levels: dict, price: float,
         }
 
     return None
+
+
+# ══════════════════════════════════════════════════════════
+#  LOG DE ALERTAS (para tracking de resultados)
+# ══════════════════════════════════════════════════════════
+def save_alert_to_log(mover: dict, cluster: dict, zct: dict,
+                      near_lvl: float, dist_pct: float):
+    """
+    Guarda cada alerta en alerts_log.json para análisis posterior de resultados.
+    El checker.py leerá este fichero y comprobará si se tocó TP o SL.
+    """
+    now    = datetime.now(timezone.utc)
+    price  = mover['price']
+    direction = mover['direction']
+    tp_pct = SL_PCT * TP_MULT
+
+    if direction == 'LONG':
+        sl = price * (1 - SL_PCT)
+        tp = price * (1 + tp_pct)
+    else:
+        sl = price * (1 + SL_PCT)
+        tp = price * (1 - tp_pct)
+
+    record = {
+        'id':           f'{mover["symbol"]}_{direction}_{now.strftime("%Y%m%d_%H%M%S")}',
+        'symbol':       mover['symbol'],
+        'direction':    direction,
+        'timestamp':    now.isoformat(),
+        'entry_price':  price,
+        'sl':           round(sl, 8),
+        'tp':           round(tp, 8),
+        'change_pct':   round(mover['change_pct'], 2),
+        'vol_ratio':    round(zct['vol_ratio'], 1),
+        'crosses':      zct['crosses'],
+        'ma_direction': zct['direction'],
+        'lvl1_name':    cluster['lvl1_name'],
+        'lvl1':         cluster['lvl1'],
+        'lvl2_name':    cluster.get('lvl2_name'),
+        'lvl2':         cluster.get('lvl2'),
+        'dist_pct':     round(dist_pct, 3),
+        'status':       'OPEN',   # OPEN → WIN / LOSS / TIMEOUT
+        'resolved_at':  None,
+        'resolved_price': None,
+    }
+
+    # Cargar log existente (si hay)
+    if ALERTS_LOG.exists():
+        try:
+            with open(ALERTS_LOG, encoding='utf-8') as f:
+                log_data = json.load(f)
+        except Exception:
+            log_data = []
+    else:
+        log_data = []
+
+    log_data.append(record)
+
+    with open(ALERTS_LOG, 'w', encoding='utf-8') as f:
+        json.dump(log_data, f, indent=2, ensure_ascii=False)
+
+    log.info(f'Alerta guardada en log: {record["id"]}')
 
 
 # ══════════════════════════════════════════════════════════
@@ -444,10 +510,12 @@ def analyze(mover: dict):
         log.info(f'{symbol}: demasiado choppy ({crosses} cruces) → skip')
         return
 
-    # Filtro 3: volumen por encima de media (>120% — rebajado de 200% porque el scanner
-    # llega cada 5min y el spike inicial ya se ha disipado cuando analiza)
+    # Filtro 3: volumen en rango óptimo 120-200% (backtest v7: >200% tiene WR 22%, peor que 120-200%)
     if vol_ratio < 120:
         log.info(f'{symbol}: volumen insuficiente ({vol_ratio:.0f}%) → skip')
+        return
+    if vol_ratio > 200:
+        log.info(f'{symbol}: volumen demasiado alto ({vol_ratio:.0f}%) → skip')
         return
 
     # Filtro 4: vela alcista obligatoria para LONG (close > open en 15m)
@@ -497,6 +565,7 @@ def analyze(mover: dict):
     _cooldowns[key] = now
     msg = build_alert(mover, cluster, zct, near_lvl, dist_pct)
     send_telegram(msg)
+    save_alert_to_log(mover, cluster, zct, near_lvl, dist_pct)
     lvl_type = 'nivel único' if cluster['single_level'] else 'cluster 2 niveles'
     log.info(f'ALERTA → {symbol} {direction} [{lvl_type}]')
 
