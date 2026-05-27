@@ -4,7 +4,7 @@ ZCT Backtester v8 — Test de CHANGE_THRESH 7% vs 10%
 
   BREAKOUT  : LONG en PDH, P4HH, P1HH, P15mH. MA up, vol >= 120%, espera max 3 velas.
               Requiere vela de entrada alcista (close > open). Distancia max 0.4%.
-              v8: añadido filtro CHANGE_THRESH para comparar 7% vs 10%.
+              v8: aniadido filtro CHANGE_THRESH para comparar 7% vs 10%.
 
   MR descartado: WR 19.2% con RR 2:1 — necesita >33% para breakeven. No tiene edge.
 
@@ -38,7 +38,7 @@ MA_DIR_THR      = 0.08
 
 OUTCOME_CANDLES = 32          # 8h de ventana para que el trade resuelva
 WARMUP_CANDLES  = SMMA_LEN + CROSS_LB + MA_DIR_LB + 5
-CHANGE_LB       = 96          # 96 velas × 15m = 24h de lookback para el cambio
+CHANGE_LB       = 96          # 96 velas x 15m = 24h de lookback para el cambio
 
 # Filtro de mover: solo senales cuando la moneda lleva X% de cambio en 24h
 # Actualmente en el scanner es 10%. Testeamos 7% para ver si hay mas senales sin perder WR.
@@ -46,9 +46,9 @@ CHANGE_THRESH   = 7.0         # % minimo de cambio 24h para considerar la senal
 
 # BREAKOUT — solo LONG con momentum real
 BKOUT_MAX_CROSSES = 1
-BKOUT_MIN_VOL     = 120       # vol minimo 120% (bajado de 200% — scanner llega tarde al spike)
+BKOUT_MIN_VOL     = 120       # vol minimo 120%
 BKOUT_MAX_WAIT    = 3         # esperar max 3 velas
-BKOUT_LEVELS      = {'PDH', 'P4HH', 'P1HH', 'P15mH'}  # todos los highs (mas muestra)
+BKOUT_LEVELS      = {'PDH', 'P4HH', 'P1HH', 'P15mH'}
 
 INTERVAL_MAP = {'15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1'}
 
@@ -388,6 +388,15 @@ def fmt_level_section(by_level):
     return '\n'.join(lines)
 
 
+def fmt_change_section(by_change):
+    if not by_change:
+        return ''
+    lines = ['Por fuerza del movimiento 24h en el momento de la senal:']
+    for lbl, (w, n, wr) in sorted(by_change.items(), key=lambda x: x[0]):
+        lines.append(f'  {lbl}: {wr:.0f}% de aciertos ({w} ganadas / {n} total)')
+    return '\n'.join(lines)
+
+
 def build_report(bkout, n_coins):
     ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
 
@@ -412,18 +421,12 @@ def build_report(bkout, n_coins):
             fmt_vol_section(bkout.get('by_vol', {})),
             '',
             fmt_level_section(bkout.get('by_level', {})),
+            '',
+            fmt_change_section(bkout.get('by_change', {})),
         ]
         bkout_str = '\n'.join(l for l in bkout_lines if l is not None)
     else:
         bkout_str = 'Sin datos'
-
-    # Desglose por cambio 24h
-    by_change = bkout.get('by_change', {}) if bkout else {}
-    change_lines = []
-    if by_change:
-        change_lines = ['', 'Por fuerza del movimiento 24h en el momento de la senal:']
-        for lbl, (w, n, wr) in sorted(by_change.items(), key=lambda x: x[0]):
-            change_lines.append(f'  {lbl}: {wr:.0f}% de aciertos ({w} ganadas / {n} total)')
 
     parts = [
         '📊 ZCT Backtest v8 — Filtro cambio 24h >= ' + str(CHANGE_THRESH) + '%',
@@ -433,7 +436,6 @@ def build_report(bkout, n_coins):
         '',
         'ESTRATEGIA BREAKOUT (operar el impulso)',
         bkout_str,
-        '\n'.join(change_lines),
         '',
         'ESTRATEGIA CONTRATENDENCIA',
         'Aciertos: 19% — 73 operaciones — ABANDONADA',
@@ -498,33 +500,7 @@ def main():
     report = build_report(bkout_analysis, len(COINS))
     log.info('Enviando reporte...')
     send_telegram(report)
-    log.info('=== Backtest v7 completado ===')
-
-
-if __name__ == '__main__':
-    main()
-        except Exception as e:
-            log.error(f'{symbol}: {e}')
-
-    log.info(f'Total setups: {len(all_results)}')
-
-    csv_path = os.path.join(os.path.dirname(__file__), 'backtest_results.csv')
-    fieldnames = ['strategy', 'symbol', 'ts', 'direction', 'level',
-                  'crosses', 'ma_dir', 'vol_ratio', 'dist_pct', 'change_pct', 'outcome']
-    if all_results:
-        with open(csv_path, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(all_results)
-        log.info(f'CSV guardado: {csv_path}')
-
-    bkout_rows = [r for r in all_results if r['strategy'] == 'BREAKOUT']
-    bkout_analysis = analyze_strategy(bkout_rows, 'BREAKOUT')
-
-    report = build_report(bkout_analysis, len(COINS))
-    log.info('Enviando reporte...')
-    send_telegram(report)
-    log.info('=== Backtest v7 completado ===')
+    log.info('=== Backtest v8 completado ===')
 
 
 if __name__ == '__main__':
