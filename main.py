@@ -31,7 +31,7 @@ TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 # ── Selección de monedas ──────────────────────────────────
 VOL_24H_MIN   = 20_000_000    # $20M mínimo volumen 24h (MEXC tiene menos liquidez que Binance)
-CHANGE_THRESH = 7.0           # ±7% en 1d para ser mover (backtest v8: 7-10% tiene 60% WR)
+CHANGE_THRESH = 10.0          # ±10% en 1d para ser mover
 
 # ── Niveles ZCT ──────────────────────────────────────────
 PROXIMITY_PCT  = 0.004   # alerta cuando precio está a 0.4% de un nivel (backtest v6)
@@ -596,3 +596,4 @@ if __name__ == '__main__':
         while True:
             scan()
             time.sleep(300)
+                                 
