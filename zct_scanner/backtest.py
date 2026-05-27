@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-ZCT Backtester v7 — Solo BREAKOUT (MR descartado: WR 19% < umbral 33%)
+ZCT Backtester v8 — Test de CHANGE_THRESH 7% vs 10%
 
   BREAKOUT  : LONG en PDH, P4HH, P1HH, P15mH. MA up, vol >= 120%, espera max 3 velas.
               Requiere vela de entrada alcista (close > open). Distancia max 0.4%.
-              v7: vol bajado de 200% a 120% para mas muestra. Niveles ampliados.
+              v8: añadido filtro CHANGE_THRESH para comparar 7% vs 10%.
 
   MR descartado: WR 19.2% con RR 2:1 — necesita >33% para breakeven. No tiene edge.
 
@@ -38,7 +38,11 @@ MA_DIR_THR      = 0.08
 
 OUTCOME_CANDLES = 32          # 8h de ventana para que el trade resuelva
 WARMUP_CANDLES  = SMMA_LEN + CROSS_LB + MA_DIR_LB + 5
-CHANGE_LB       = 96
+CHANGE_LB       = 96          # 96 velas × 15m = 24h de lookback para el cambio
+
+# Filtro de mover: solo senales cuando la moneda lleva X% de cambio en 24h
+# Actualmente en el scanner es 10%. Testeamos 7% para ver si hay mas senales sin perder WR.
+CHANGE_THRESH   = 7.0         # % minimo de cambio 24h para considerar la senal
 
 # BREAKOUT — solo LONG con momentum real
 BKOUT_MAX_CROSSES = 1
@@ -235,6 +239,10 @@ def backtest_coin(symbol):
         ref_idx    = max(0, idx - CHANGE_LB)
         change_pct = (price - closes[ref_idx]) / closes[ref_idx] * 100 if closes[ref_idx] > 0 else 0.0
 
+        # Filtro mover: solo operar cuando la moneda lleva >= CHANGE_THRESH% en 24h
+        if abs(change_pct) < CHANGE_THRESH:
+            continue
+
         for lvl_name, lvl_price in levels.items():
             if lvl_price <= 0:
                 continue
@@ -334,11 +342,21 @@ def analyze_strategy(rows, label):
             w = sum(1 for r in sub if r['outcome'] == 'WIN')
             by_dist[lbl] = (w, len(sub), w / len(sub) * 100)
 
+    # Desglose por rango de cambio 24h
+    change_bins = [(7, 10, '7-10%'), (10, 15, '10-15%'), (15, 25, '15-25%'), (25, 999, '25%+')]
+    by_change = {}
+    for lo, hi, lbl in change_bins:
+        sub = [r for r in rows if lo <= abs(r['change_pct']) < hi]
+        if sub:
+            w = sum(1 for r in sub if r['outcome'] == 'WIN')
+            by_change[lbl] = (w, len(sub), w / len(sub) * 100)
+
     return {
         'label': label, 'total': total, 'wins': wins, 'wr': wr,
         'by_vol': by_vol,
         'by_dist': by_dist,
         'by_level': by_level,
+        'by_change': by_change,
     }
 
 
@@ -399,14 +417,23 @@ def build_report(bkout, n_coins):
     else:
         bkout_str = 'Sin datos'
 
+    # Desglose por cambio 24h
+    by_change = bkout.get('by_change', {}) if bkout else {}
+    change_lines = []
+    if by_change:
+        change_lines = ['', 'Por fuerza del movimiento 24h en el momento de la senal:']
+        for lbl, (w, n, wr) in sorted(by_change.items(), key=lambda x: x[0]):
+            change_lines.append(f'  {lbl}: {wr:.0f}% de aciertos ({w} ganadas / {n} total)')
+
     parts = [
-        '📊 ZCT Backtest',
+        '📊 ZCT Backtest v8 — Filtro cambio 24h >= ' + str(CHANGE_THRESH) + '%',
         'Analizadas ' + str(n_coins) + ' monedas durante los ultimos 15 dias',
         'Stop Loss 1% · Take Profit 2%',
         'Para ganar dinero necesitas acertar mas del 33% de las veces',
         '',
         'ESTRATEGIA BREAKOUT (operar el impulso)',
         bkout_str,
+        '\n'.join(change_lines),
         '',
         'ESTRATEGIA CONTRATENDENCIA',
         'Aciertos: 19% — 73 operaciones — ABANDONADA',
@@ -439,8 +466,8 @@ def send_telegram(msg):
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
-    log.info('=== ZCT Backtester v7 iniciando ===')
-    log.info(f'SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=2:1')
+    log.info('=== ZCT Backtester v8 iniciando ===')
+    log.info(f'SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=2:1  CHANGE_THRESH={CHANGE_THRESH}%')
     log.info(f'BREAKOUT: LONG, niveles={BKOUT_LEVELS}, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, dist<=0.4%')
     log.info('MR: descartado (WR 19% < 33% breakeven con RR 2:1)')
     all_results = []
@@ -450,6 +477,32 @@ def main():
             log.info(f'[{i+1}/{len(COINS)}] {symbol}')
             results = backtest_coin(symbol)
             all_results.extend(results)
+        except Exception as e:
+            log.error(f'{symbol}: {e}')
+
+    log.info(f'Total setups: {len(all_results)}')
+
+    csv_path = os.path.join(os.path.dirname(__file__), 'backtest_results.csv')
+    fieldnames = ['strategy', 'symbol', 'ts', 'direction', 'level',
+                  'crosses', 'ma_dir', 'vol_ratio', 'dist_pct', 'change_pct', 'outcome']
+    if all_results:
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(all_results)
+        log.info(f'CSV guardado: {csv_path}')
+
+    bkout_rows = [r for r in all_results if r['strategy'] == 'BREAKOUT']
+    bkout_analysis = analyze_strategy(bkout_rows, 'BREAKOUT')
+
+    report = build_report(bkout_analysis, len(COINS))
+    log.info('Enviando reporte...')
+    send_telegram(report)
+    log.info('=== Backtest v7 completado ===')
+
+
+if __name__ == '__main__':
+    main()
         except Exception as e:
             log.error(f'{symbol}: {e}')
 
