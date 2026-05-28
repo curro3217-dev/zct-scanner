@@ -5,6 +5,9 @@ on:
     - cron: '*/5 * * * *'   # cada 5 minutos
   workflow_dispatch:          # también se puede lanzar a mano desde GitHub
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   scan:
     runs-on: ubuntu-latest
