@@ -1,11 +1,12 @@
 """
-ZCT Scanner v8 — Seleccion Dinamica de Movers
-Selecciona monedas automaticamente segun:
-  - Volumen 24h > $20M
-  - Cambio 1d >= +10% -> solo LONG
-  - Cambio 1d <= -10% -> solo SHORT
+ZCT Scanner v8 — Selección Dinámica de Movers
+Selecciona monedas automáticamente según:
+  - Volumen 24h > $20M (rebajado de $100M para mejor cobertura MEXC)
+  - Cambio 1d ≥ +10% → solo LONG
+  - Cambio 1d ≤ -10% → solo SHORT
 Aplica filtros ZCT: 15m, vol 120-200%, vela alcista, cruces<=1, dist<=0.4%.
 Niveles: P4H y P15m (backtest v7: WR 67% y 64%. P1H y PDH descartados).
+Cambios v8: vol max 200%, niveles reducidos a P4H+P15m.
 
 Estrategia: Trading From Zero / Koroush AK (ZCT)
 Autor: generado con Claude para Curro / Tradetor
@@ -23,46 +24,46 @@ logging.basicConfig(
 )
 
 # ══════════════════════════════════════════════════════════
-#  CONFIGURACION
+#  CONFIGURACIÓN
 # ══════════════════════════════════════════════════════════
 TELEGRAM_TOKEN   = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
-# Seleccion de monedas
-VOL_24H_MIN   = 20_000_000    # $20M minimo volumen 24h (datos MEXC, no agregado)
-CHANGE_THRESH = 10.0          # +-10% en 1d para ser mover
+# ── Selección de monedas ──────────────────────────────────
+VOL_24H_MIN   = 20_000_000    # $20M mínimo volumen 24h (MEXC tiene menos liquidez que Binance)
+CHANGE_THRESH = 10.0          # ±10% en 1d para ser mover
 
-# Niveles ZCT
-PROXIMITY_PCT  = 0.004   # alerta cuando precio esta a 0.4% de un nivel
-MAX_DIST_PCT   = 15.0    # nivel ignorado si esta a mas del 15% del precio
-CLUSTER_TOP    = 2.0     # distancia maxima entre 2 niveles (top coins)
-CLUSTER_ALT    = 3.0     # distancia maxima entre 2 niveles (altcoins)
+# ── Niveles ZCT ──────────────────────────────────────────
+PROXIMITY_PCT  = 0.004   # alerta cuando precio está a 0.4% de un nivel (backtest v6)
+MAX_DIST_PCT   = 15.0    # nivel ignorado si está a más del 15% del precio
+CLUSTER_TOP    = 2.0     # distancia máxima entre 2 niveles (top coins)
+CLUSTER_ALT    = 3.0     # distancia máxima entre 2 niveles (altcoins)
 
-# Trade parameters
-SL_PCT    = 0.02    # 2% stop loss maximo
-TP_MULT   = 3.0     # 3R minimo -> TP = SL x 3 = 6%
+# ── Trade parameters ──────────────────────────────────────
+SL_PCT    = 0.02    # 2% stop loss máximo
+TP_MULT   = 3.0     # 3R mínimo → TP = SL × 3 = 6%
 LEVERAGE  = 5       # demo
 
-# ZCT / MA
+# ── ZCT / MA ──────────────────────────────────────────────
 SMMA_LEN   = 30
 VOL_MA_LEN = 20
-CROSS_LB   = 50     # velas atras para contar cruces
-MA_DIR_LB  = 5      # velas atras para detectar direccion MA
-MA_DIR_THR = 0.08   # % minimo de pendiente para considerarla tendencial
+CROSS_LB   = 50     # velas atrás para contar cruces
+MA_DIR_LB  = 5      # velas atrás para detectar dirección MA
+MA_DIR_THR = 0.08   # % mínimo de pendiente para considerarla tendencial
 
-# Cooldown
-COOLDOWN_MIN = 60   # minutos entre alertas del mismo simbolo+direccion
+# ── Cooldown ──────────────────────────────────────────────
+COOLDOWN_MIN = 60   # minutos entre alertas del mismo símbolo+dirección
 
-# Top coins (cluster mas estricto: 2%)
+# ── Top coins (cluster más estricto: 2%) ─────────────────
 TOP_COINS = {'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'SOL_USDT', 'XRP_USDT'}
 
-# Pump fuerte: permite nivel unico como target
-STRONG_PUMP_PCT = 30.0  # si |cambio| >= 30%, nivel unico permitido
+# ── Pump fuerte: permite nivel único como target ──────────
+STRONG_PUMP_PCT = 30.0  # si |cambio| >= 30%, nivel único permitido
 
-# Bear market: alerta de salida anticipada
+# ── Bear market: alerta de salida anticipada ──────────────
 EARLY_EXIT_DIST = 5.0   # si nivel > 5% del precio, avisar salida anticipada
 
-# Intervalos MEXC
+# ── Intervalos MEXC ──────────────────────────────────────
 INTERVAL_MAP = {
     '1m':  'Min1',
     '15m': 'Min15',
@@ -72,16 +73,16 @@ INTERVAL_MAP = {
 }
 
 # Estado de cooldowns en memoria
-_cooldowns = {}
+_cooldowns: dict = {}
 
-# Ruta al log de alertas
+# Ruta al log de alertas (se guarda junto a main.py, en la raíz del repo)
 ALERTS_LOG = Path(__file__).parent / 'alerts_log.json'
 
 
 # ══════════════════════════════════════════════════════════
 #  TELEGRAM
 # ══════════════════════════════════════════════════════════
-def send_telegram(msg):
+def send_telegram(msg: str):
     try:
         r = requests.post(
             f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
@@ -102,7 +103,8 @@ def send_telegram(msg):
 # ══════════════════════════════════════════════════════════
 #  MEXC API
 # ══════════════════════════════════════════════════════════
-def get_all_tickers():
+def get_all_tickers() -> list:
+    """Devuelve todos los tickers de futuros MEXC con stats 24h."""
     try:
         r = requests.get(
             'https://contract.mexc.com/api/v1/contract/ticker',
@@ -114,7 +116,29 @@ def get_all_tickers():
         return []
 
 
-def get_klines(symbol, interval, limit=200):
+def get_daily_change(symbol: str) -> float | None:
+    """
+    Calcula el cambio real de precio en las últimas 24h usando velas diarias.
+    Devuelve el porcentaje (ej: -21.5 para -21.5%) o None si falla.
+
+    Por qué no usar riseFallRate del bulk ticker:
+      - El bulk usa cambio de día calendario UTC+8 (medianoche → ahora).
+      - TradingView usa 24h rodantes (desde hace 24h hasta ahora).
+      - Al principio del día UTC+8 el bulk puede mostrar -2% mientras
+        TradingView muestra -21%. Esto causaba 0 movers falsos.
+    """
+    k = get_klines(symbol, '1d', limit=3)
+    if not k or len(k['close']) < 2:
+        return None
+    prev_close = k['close'][-2]
+    curr_close = k['close'][-1]
+    if prev_close <= 0:
+        return None
+    return (curr_close - prev_close) / prev_close * 100
+
+
+def get_klines(symbol: str, interval: str, limit: int = 200):
+    """Devuelve velas OHLCV de MEXC futuros."""
     try:
         r = requests.get(
             f'https://contract.mexc.com/api/v1/contract/kline/{symbol}',
@@ -133,24 +157,40 @@ def get_klines(symbol, interval, limit=200):
 
 
 # ══════════════════════════════════════════════════════════
-#  SELECCION DE MOVERS
+#  SELECCIÓN DE MOVERS
 # ══════════════════════════════════════════════════════════
-def get_movers():
+def get_movers() -> list:
+    """
+    Filtra todos los futuros MEXC y devuelve movers con:
+    - Vol 24h > $20M (desde bulk ticker)
+    - Cambio 1d >= +10% o <= -10% (calculado desde klines diarias, igual que TradingView)
+    Ordenados por cambio absoluto descendente.
+    """
     tickers = get_all_tickers()
-    movers  = []
+    candidates = []
 
+    # Paso 1: pre-filtrar por volumen usando el bulk ticker (rápido, 1 sola llamada)
     for t in tickers:
         symbol = t.get('symbol', '')
         if not symbol.endswith('_USDT'):
             continue
         try:
-            vol_24h    = float(t.get('amount24', 0) or 0)
-            change_pct = float(t.get('riseFallRate', 0) or 0) * 100
-            price      = float(t.get('lastPrice', 0) or 0)
+            vol_24h = float(t.get('amount24', 0) or 0)
+            price   = float(t.get('lastPrice', 0) or 0)
         except (ValueError, TypeError):
             continue
+        if vol_24h >= VOL_24H_MIN and price > 0:
+            candidates.append({'symbol': symbol, 'vol_24h': vol_24h, 'price': price})
 
-        if vol_24h < VOL_24H_MIN or price <= 0:
+    log.info(f'Candidatos por volumen (>= ${VOL_24H_MIN/1e6:.0f}M): {len(candidates)}')
+
+    # Paso 2: calcular cambio real 24h desde velas diarias y filtrar por threshold
+    movers = []
+    for c in candidates:
+        symbol  = c['symbol']
+        change_pct = get_daily_change(symbol)
+        if change_pct is None:
+            log.debug(f'{symbol}: sin datos diarios')
             continue
 
         if change_pct >= CHANGE_THRESH:
@@ -158,27 +198,35 @@ def get_movers():
         elif change_pct <= -CHANGE_THRESH:
             direction = 'SHORT'
         else:
+            log.debug(f'{symbol}: cambio {change_pct:.1f}% < {CHANGE_THRESH}% → skip')
             continue
 
         movers.append({
             'symbol':     symbol,
             'direction':  direction,
             'change_pct': change_pct,
-            'vol_24h':    vol_24h,
-            'price':      price,
+            'vol_24h':    c['vol_24h'],
+            'price':      c['price'],
         })
+        time.sleep(0.15)  # evitar rate limit MEXC entre llamadas individuales
 
     movers.sort(key=lambda x: abs(x['change_pct']), reverse=True)
     n_long  = sum(1 for m in movers if m['direction'] == 'LONG')
     n_short = sum(1 for m in movers if m['direction'] == 'SHORT')
     log.info(f'Movers: {len(movers)} ({n_long}L / {n_short}S)')
+
+    # Log top 5 para debug
+    for m in movers[:5]:
+        log.info(f'  {m["symbol"]} {m["direction"]} {m["change_pct"]:+.1f}% vol=${m["vol_24h"]/1e6:.0f}M')
+
     return movers
 
 
 # ══════════════════════════════════════════════════════════
-#  ANALISIS TECNICO ZCT
+#  ANÁLISIS TÉCNICO ZCT
 # ══════════════════════════════════════════════════════════
-def calc_smma(closes, length=30):
+def calc_smma(closes: list, length: int = 30) -> list:
+    """Smoothed Moving Average (Wilder). Idéntica a la de TradingView."""
     if len(closes) < length:
         return []
     sma = sum(closes[:length]) / length
@@ -188,7 +236,8 @@ def calc_smma(closes, length=30):
     return result
 
 
-def count_crosses(closes, ma, lb=50):
+def count_crosses(closes: list, ma: list, lb: int = 50) -> int:
+    """Cuenta cruces del precio con la 30SMMA en las últimas lb velas."""
     n = min(lb, len(closes) - 1, len(ma) - 1)
     crosses = 0
     for i in range(1, n + 1):
@@ -199,7 +248,8 @@ def count_crosses(closes, ma, lb=50):
     return crosses
 
 
-def get_ma_direction(ma, lb=5):
+def get_ma_direction(ma: list, lb: int = 5) -> str:
+    """Devuelve 'up', 'down' o 'sideways' según la pendiente de la MA."""
     if len(ma) < lb + 1:
         return 'sideways'
     pct = (ma[-1] - ma[-(lb+1)]) / ma[-(lb+1)] * 100
@@ -210,7 +260,11 @@ def get_ma_direction(ma, lb=5):
     return 'sideways'
 
 
-def analyze_zct(closes, amounts):
+def analyze_zct(closes: list, amounts: list) -> dict:
+    """
+    Aplica los filtros ZCT de medias móviles y volumen.
+    Devuelve dict con crosses, ma_direction, vol_ratio, etc.
+    """
     ma = calc_smma(closes, SMMA_LEN)
     if not ma:
         return {}
@@ -222,17 +276,29 @@ def analyze_zct(closes, amounts):
                  if len(amounts) >= VOL_MA_LEN else None)
     vol_ratio = amounts[-1] / vol_ma * 100 if vol_ma else 100.0
 
+    mom_ideal = (crosses <= 3 and direction in ('up', 'down') and vol_ratio > 115)
+    mr_ideal  = (crosses >= 7 and direction == 'sideways' and 85 <= vol_ratio <= 115)
+
     return {
         'crosses':   crosses,
         'direction': direction,
         'vol_ratio': vol_ratio,
+        'mom_ideal': mom_ideal,
+        'mr_ideal':  mr_ideal,
     }
 
 
 # ══════════════════════════════════════════════════════════
 #  NIVELES ZCT
 # ══════════════════════════════════════════════════════════
-def get_zct_levels(symbol):
+def get_zct_levels(symbol: str) -> dict:
+    """
+    Obtiene niveles ZCT de la vela anterior en cada timeframe:
+      PDH/PDL   → día anterior   (mayor liquidez, tarda más en activarse)
+      P4HH/P4HL → 4h anterior
+      P1HH/P1HL → 1h anterior
+      P15mH/P15mL → 15m anterior  (excelentes para intradia, 70% de trades)
+    """
     levels = {}
     # Solo 4h y 15m — backtest v7: WR 67% y 64%. P1H (41%) y PDH (25%) descartados.
     for interval, prefix in [('4h', 'P4H'), ('15m', 'P15m')]:
@@ -243,7 +309,21 @@ def get_zct_levels(symbol):
     return levels
 
 
-def find_level_cluster(levels, price, direction, symbol, change_pct=0.0):
+def find_level_cluster(levels: dict, price: float,
+                       direction: str, symbol: str,
+                       change_pct: float = 0.0):
+    """
+    Busca un cluster de 2 niveles válido:
+      - En la dirección correcta (resistencia para LONG, soporte para SHORT)
+      - Dentro del 15% del precio actual
+      - Separados máximo cluster_pct (2% top coins / 3% altcoins)
+
+    Excepción nivel único (Anexo 7 del PDF):
+      Si |cambio 1d| >= 30% y no hay cluster, permite 1 nivel solo.
+      Solo cuando la moneda se mueve con fuerza y sin niveles adicionales.
+
+    Devuelve dict con lvl1/lvl2 y flag 'single_level', o None.
+    """
     cluster_pct = CLUSTER_TOP if symbol in TOP_COINS else CLUSTER_ALT
 
     candidates = []
@@ -261,6 +341,7 @@ def find_level_cluster(levels, price, direction, symbol, change_pct=0.0):
 
     candidates.sort(key=lambda x: abs(x[1] - price))
 
+    # Intentar cluster de 2 niveles (caso normal)
     for i in range(len(candidates)):
         for j in range(i + 1, len(candidates)):
             n1, l1 = candidates[i]
@@ -274,6 +355,7 @@ def find_level_cluster(levels, price, direction, symbol, change_pct=0.0):
                     'single_level': False,
                 }
 
+    # Excepción: pump/dump fuerte (≥30%) → nivel único válido
     if abs(change_pct) >= STRONG_PUMP_PCT:
         n1, l1 = candidates[0]
         return {
@@ -287,13 +369,18 @@ def find_level_cluster(levels, price, direction, symbol, change_pct=0.0):
 
 
 # ══════════════════════════════════════════════════════════
-#  LOG DE ALERTAS
+#  LOG DE ALERTAS (para tracking de resultados)
 # ══════════════════════════════════════════════════════════
-def save_alert_to_log(mover, cluster, zct, near_lvl, dist_pct):
-    now       = datetime.now(timezone.utc)
-    price     = mover['price']
+def save_alert_to_log(mover: dict, cluster: dict, zct: dict,
+                      near_lvl: float, dist_pct: float):
+    """
+    Guarda cada alerta en alerts_log.json para análisis posterior de resultados.
+    El checker.py leerá este fichero y comprobará si se tocó TP o SL.
+    """
+    now    = datetime.now(timezone.utc)
+    price  = mover['price']
     direction = mover['direction']
-    tp_pct    = SL_PCT * TP_MULT
+    tp_pct = SL_PCT * TP_MULT
 
     if direction == 'LONG':
         sl = price * (1 - SL_PCT)
@@ -303,27 +390,28 @@ def save_alert_to_log(mover, cluster, zct, near_lvl, dist_pct):
         tp = price * (1 - tp_pct)
 
     record = {
-        'id':             f'{mover["symbol"]}_{direction}_{now.strftime("%Y%m%d_%H%M%S")}',
-        'symbol':         mover['symbol'],
-        'direction':      direction,
-        'timestamp':      now.isoformat(),
-        'entry_price':    price,
-        'sl':             round(sl, 8),
-        'tp':             round(tp, 8),
-        'change_pct':     round(mover['change_pct'], 2),
-        'vol_ratio':      round(zct['vol_ratio'], 1),
-        'crosses':        zct['crosses'],
-        'ma_direction':   zct['direction'],
-        'lvl1_name':      cluster['lvl1_name'],
-        'lvl1':           cluster['lvl1'],
-        'lvl2_name':      cluster.get('lvl2_name'),
-        'lvl2':           cluster.get('lvl2'),
-        'dist_pct':       round(dist_pct, 3),
-        'status':         'OPEN',
-        'resolved_at':    None,
+        'id':           f'{mover["symbol"]}_{direction}_{now.strftime("%Y%m%d_%H%M%S")}',
+        'symbol':       mover['symbol'],
+        'direction':    direction,
+        'timestamp':    now.isoformat(),
+        'entry_price':  price,
+        'sl':           round(sl, 8),
+        'tp':           round(tp, 8),
+        'change_pct':   round(mover['change_pct'], 2),
+        'vol_ratio':    round(zct['vol_ratio'], 1),
+        'crosses':      zct['crosses'],
+        'ma_direction': zct['direction'],
+        'lvl1_name':    cluster['lvl1_name'],
+        'lvl1':         cluster['lvl1'],
+        'lvl2_name':    cluster.get('lvl2_name'),
+        'lvl2':         cluster.get('lvl2'),
+        'dist_pct':     round(dist_pct, 3),
+        'status':       'OPEN',   # OPEN → WIN / LOSS / TIMEOUT
+        'resolved_at':  None,
         'resolved_price': None,
     }
 
+    # Cargar log existente (si hay)
     if ALERTS_LOG.exists():
         try:
             with open(ALERTS_LOG, encoding='utf-8') as f:
@@ -342,9 +430,10 @@ def save_alert_to_log(mover, cluster, zct, near_lvl, dist_pct):
 
 
 # ══════════════════════════════════════════════════════════
-#  CONSTRUCCION DE ALERTA
+#  CONSTRUCCIÓN DE ALERTA
 # ══════════════════════════════════════════════════════════
-def build_alert(mover, cluster, zct, near_lvl, dist_pct):
+def build_alert(mover: dict, cluster: dict, zct: dict,
+                near_lvl: float, dist_pct: float) -> str:
     symbol     = mover['symbol']
     direction  = mover['direction']
     price      = mover['price']
@@ -353,15 +442,15 @@ def build_alert(mover, cluster, zct, near_lvl, dist_pct):
 
     tp_pct = SL_PCT * TP_MULT
     if direction == 'LONG':
-        sl, tp         = price * (1 - SL_PCT), price * (1 + tp_pct)
+        sl, tp        = price * (1 - SL_PCT), price * (1 + tp_pct)
         d_emoji, d_txt = '🟢', 'LONG'
     else:
-        sl, tp         = price * (1 + SL_PCT), price * (1 - tp_pct)
+        sl, tp        = price * (1 + SL_PCT), price * (1 - tp_pct)
         d_emoji, d_txt = '🔴', 'SHORT'
 
-    fmt   = lambda p: f'{p:,.4f}' if p >= 1 else f'{p:.6f}'
-    chg   = f'+{change_pct:.1f}%' if change_pct > 0 else f'{change_pct:.1f}%'
-    vol_m = vol_24h / 1_000_000
+    fmt    = lambda p: f'{p:,.4f}' if p >= 1 else f'{p:.6f}'
+    chg    = f'+{change_pct:.1f}%' if change_pct > 0 else f'{change_pct:.1f}%'
+    vol_m  = vol_24h / 1_000_000
 
     ma_txt  = {'up': '📈 Alcista', 'down': '📉 Bajista',
                'sideways': '↔️ Lateral'}[zct['direction']]
@@ -369,6 +458,7 @@ def build_alert(mover, cluster, zct, near_lvl, dist_pct):
                else '📉 Decreciente' if zct['vol_ratio'] < 85
                else '➡️ Plano')
 
+    # Bloque de niveles: cluster normal o nivel único (pump fuerte)
     if cluster['single_level']:
         levels_txt = (
             f'📍 Nivel único: {cluster["lvl1_name"]} @ {fmt(cluster["lvl1"])}\n'
@@ -381,10 +471,11 @@ def build_alert(mover, cluster, zct, near_lvl, dist_pct):
             f'  ({cluster["gap_pct"]:.1f}% entre niveles)'
         )
 
+    # Nota bear market: si nivel > 5% del precio, mejor salida anticipada
     bear_note = ''
     if dist_pct > EARLY_EXIT_DIST:
         bear_note = (
-            f'\n⚠️ Nivel a {dist_pct:.1f}% — mercado debil: '
+            f'\n⚠️ Nivel a {dist_pct:.1f}% — mercado débil: '
             f'considerar salida anticipada antes del sweep completo'
         )
 
@@ -397,27 +488,28 @@ def build_alert(mover, cluster, zct, near_lvl, dist_pct):
         f'{levels_txt}\n\n'
         f'💰 Precio: {fmt(price)}  →  {dist_pct:.2f}% del nivel\n'
         f'{bear_note}\n'
-        f'<b>Condiciones ZCT (15m):</b>\n'
+        f'<b>Condiciones ZCT (1m):</b>\n'
         f'{ma_txt}  ·  🔁 Cruces: {zct["crosses"]}'
         f'  ·  📊 Vol: {vol_txt} ({zct["vol_ratio"]:.0f}%)\n'
         f'\n─────────────────\n'
         f'<b>{d_emoji} {d_txt}  ·  x{LEVERAGE} (demo)</b>\n'
         f'📥 Entry: {fmt(price)}\n'
-        f'🛑 SL:    {fmt(sl)}  (2% max)\n'
-        f'🎯 TP:    {fmt(tp)}  (6% = 3R minimo)\n'
+        f'🛑 SL:    {fmt(sl)}  (2% máx)\n'
+        f'🎯 TP:    {fmt(tp)}  (6% = 3R mínimo)\n'
         f'\n🔗 <a href="{tv}">Ver en TradingView (4H)</a>\n'
         f'⏰ {datetime.now(timezone.utc).strftime("%H:%M UTC")}'
     )
 
 
 # ══════════════════════════════════════════════════════════
-#  ANALISIS POR SIMBOLO
+#  ANÁLISIS POR SÍMBOLO
 # ══════════════════════════════════════════════════════════
-def analyze(mover):
+def analyze(mover: dict):
     symbol    = mover['symbol']
     direction = mover['direction']
     price     = mover['price']
 
+    # Cooldown
     key = f'{symbol}_{direction}'
     now = datetime.now(timezone.utc)
     if key in _cooldowns:
@@ -425,6 +517,7 @@ def analyze(mover):
         if elapsed < COOLDOWN_MIN:
             return
 
+    # Velas 15m para análisis ZCT (backtest v5: edge en 15m, no 1m)
     k15m = get_klines(symbol, '15m', limit=200)
     if not k15m:
         log.warning(f'{symbol}: sin datos 15m')
@@ -442,48 +535,51 @@ def analyze(mover):
     crosses   = zct['crosses']
     vol_ratio = zct['vol_ratio']
 
-    # Filtro 1: MA nunca contra la direccion del trade
+    # Filtro 1: MA nunca contra la dirección del trade
     if direction == 'LONG' and ma_dir == 'down':
-        log.info(f'{symbol}: LONG pero MA bajista -> skip')
+        log.info(f'{symbol}: LONG pero MA bajista → skip')
         return
     if direction == 'SHORT' and ma_dir == 'up':
-        log.info(f'{symbol}: SHORT pero MA alcista -> skip')
+        log.info(f'{symbol}: SHORT pero MA alcista → skip')
         return
 
-    # Filtro 2: maximo 1 cruce
+    # Filtro 2: máximo 1 cruce (2-3 = 0% WR en backtest, >3 = choppy)
     if crosses > 1:
-        log.info(f'{symbol}: demasiado choppy ({crosses} cruces) -> skip')
+        log.info(f'{symbol}: demasiado choppy ({crosses} cruces) → skip')
         return
 
-    # Filtro 3: volumen en rango optimo 120-200%
+    # Filtro 3: volumen en rango óptimo 120-200% (backtest v7: >200% tiene WR 22%, peor que 120-200%)
     if vol_ratio < 120:
-        log.info(f'{symbol}: volumen insuficiente ({vol_ratio:.0f}%) -> skip')
+        log.info(f'{symbol}: volumen insuficiente ({vol_ratio:.0f}%) → skip')
         return
     if vol_ratio > 200:
-        log.info(f'{symbol}: volumen demasiado alto ({vol_ratio:.0f}%) -> skip')
+        log.info(f'{symbol}: volumen demasiado alto ({vol_ratio:.0f}%) → skip')
         return
 
-    # Filtro 4: vela alcista obligatoria para LONG
+    # Filtro 4: vela alcista obligatoria para LONG (close > open en 15m)
     if direction == 'LONG' and closes[-1] <= opens[-1]:
-        log.info(f'{symbol}: vela bajista en LONG -> skip')
+        log.info(f'{symbol}: vela bajista en LONG → skip')
         return
 
     log.info(f'{symbol}: chg={mover["change_pct"]:.1f}% dir={direction} '
              f'ma={ma_dir} cruces={crosses} vol={vol_ratio:.0f}%')
 
+    # Niveles ZCT
     levels = get_zct_levels(symbol)
     if len(levels) < 2:
         log.info(f'{symbol}: no hay suficientes niveles')
         return
 
+    # Cluster de 2 niveles (o 1 si pump fuerte ≥30%)
     cluster = find_level_cluster(
         levels, price, direction, symbol,
         change_pct=mover['change_pct']
     )
     if not cluster:
-        log.info(f'{symbol}: no se encontro cluster de niveles')
+        log.info(f'{symbol}: no se encontró cluster de niveles')
         return
 
+    # Proximidad al nivel más cercano del cluster
     if cluster['single_level'] or cluster['lvl2'] is None:
         near_lvl = cluster['lvl1']
     else:
@@ -495,19 +591,21 @@ def analyze(mover):
     dist_pct = dist * 100
 
     if dist > PROXIMITY_PCT:
-        log.info(f'{symbol}: no suficientemente cerca ({dist_pct:.2f}%) -> skip')
+        log.info(f'{symbol}: no suficientemente cerca ({dist_pct:.2f}%) → skip')
         return
 
+    # Filtro 5: distancia mínima al nivel (muy pegado = precio ya lo cruzó)
     if dist_pct < 0.2:
-        log.info(f'{symbol}: demasiado pegado al nivel ({dist_pct:.3f}%) -> skip')
+        log.info(f'{symbol}: demasiado pegado al nivel ({dist_pct:.3f}%) → skip')
         return
 
+    # Alerta
     _cooldowns[key] = now
     msg = build_alert(mover, cluster, zct, near_lvl, dist_pct)
     send_telegram(msg)
     save_alert_to_log(mover, cluster, zct, near_lvl, dist_pct)
-    lvl_type = 'nivel unico' if cluster['single_level'] else 'cluster 2 niveles'
-    log.info(f'ALERTA -> {symbol} {direction} [{lvl_type}]')
+    lvl_type = 'nivel único' if cluster['single_level'] else 'cluster 2 niveles'
+    log.info(f'ALERTA → {symbol} {direction} [{lvl_type}]')
 
 
 # ══════════════════════════════════════════════════════════
