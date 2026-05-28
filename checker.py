@@ -245,14 +245,14 @@ def main():
     log.info('=== ZCT Checker iniciado ===')
 
     if not ALERTS_LOG.exists():
-        send_telegram('📊 ZCT Scanner — sin alertas registradas aún.\nEl sistema está activo y esperando señales.')
+        log.info('No hay alerts_log.json — nada que comprobar')
         return
 
     with open(ALERTS_LOG, encoding='utf-8') as f:
         records = json.load(f)
 
     if not records:
-        send_telegram('📊 ZCT Scanner — sin alertas registradas aún.\nEl sistema está activo y esperando señales.')
+        log.info('alerts_log.json vacio — nada que comprobar')
         return
 
     open_alerts = [r for r in records if r['status'] == 'OPEN']

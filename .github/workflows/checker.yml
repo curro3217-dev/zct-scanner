@@ -2,7 +2,7 @@ name: ZCT Checker
 
 on:
   schedule:
-    - cron: '0 */4 * * *'   # cada 4 horas (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
+    - cron: '0 8 * * *'     # una vez al dia a las 8:00 UTC
   workflow_dispatch:          # también se puede lanzar a mano desde GitHub
 
 jobs:
