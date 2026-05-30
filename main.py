@@ -471,7 +471,7 @@ def build_alert(mover: dict, cluster: dict, zct: dict,
         )
 
     tv = (f'https://www.tradingview.com/chart/?symbol='
-          f'BINANCE:{symbol.replace("_","")}&interval=240')
+          f'BINANCE:{symbol.replace("_","")}&interval=5')
 
     dir_icon = 'LONG' if direction == 'LONG' else 'SHORT'
 
@@ -489,7 +489,7 @@ def build_alert(mover: dict, cluster: dict, zct: dict,
         f'Entry: {fmt(price)}\n'
         f'SL:    {fmt(sl)}  (2% max)\n'
         f'TP:    {fmt(tp)}  (6% = 3R minimo)\n'
-        f'\n<a href="{tv}">Ver en TradingView (4H)</a>\n'
+        f'\n<a href="{tv}">Ver en TradingView (5m)</a>\n'
         f'{datetime.now(timezone.utc).strftime("%H:%M UTC")}'
     )
 
