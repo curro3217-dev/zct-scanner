@@ -1,1 +1,24 @@
-[]
+[
+  {
+    "id": "ONDO_USDT_SHORT_20260530_105637",
+    "symbol": "ONDO_USDT",
+    "direction": "SHORT",
+    "timestamp": "2026-05-30T10:56:37.714165+00:00",
+    "entry_price": 0.3468,
+    "sl": 0.350268,
+    "tp": 0.336396,
+    "change_pct": -2.23,
+    "change_7d": -18.66,
+    "vol_ratio": 113.3,
+    "crosses": 0,
+    "ma_direction": "down",
+    "lvl1_name": "P15mL",
+    "lvl1": 0.3457,
+    "lvl2_name": "P4HL",
+    "lvl2": 0.3449,
+    "dist_pct": 0.318,
+    "status": "OPEN",
+    "resolved_at": null,
+    "resolved_price": null
+  }
+]
