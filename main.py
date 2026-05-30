@@ -25,7 +25,7 @@ TELEGRAM_TOKEN   = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 # Seleccion de monedas
-VOL_24H_MIN   = 100_000_000  # $100M minimo volumen 24h
+VOL_24H_MIN   = 20_000_000   # $20M minimo volumen 24h (MEXC, no volumen global agregado)
 CHANGE_THRESH = 10.0         # +-10% para ser mover (24h o 7d)
 
 # Niveles ZCT
