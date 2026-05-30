@@ -276,7 +276,7 @@ def analyze_zct(closes: list, amounts: list) -> dict:
                  if len(amounts) >= VOL_MA_LEN else None)
     vol_ratio = amounts[-1] / vol_ma * 100 if vol_ma else 100.0
 
-    mom_ideal = (crosses <= 3 and direction in ('up', 'down') and vol_ratio > 115)
+    mom_ideal = (crosses <= 3 and direction in ('up', 'down') and vol_ratio > 80)
     mr_ideal  = (crosses >= 7 and direction == 'sideways' and 85 <= vol_ratio <= 115)
 
     return {
@@ -548,9 +548,10 @@ def analyze(mover: dict):
         log.info(f'{symbol}: demasiado choppy ({crosses} cruces) → skip')
         return
 
-    # Filtro 3: volumen en rango óptimo 120-200% (backtest v7: >200% tiene WR 22%, peor que 120-200%)
-    if vol_ratio < 120:
-        log.info(f'{symbol}: volumen insuficiente ({vol_ratio:.0f}%) → skip')
+    # Filtro 3: volumen mínimo 80% de la media (permite tendencias sostenidas, no solo spikes)
+    # Máx 200% sigue activo (backtest v7: >200% tiene WR 22%)
+    if vol_ratio < 80:
+        log.info(f'{symbol}: volumen muy bajo ({vol_ratio:.0f}%) → skip')
         return
     if vol_ratio > 200:
         log.info(f'{symbol}: volumen demasiado alto ({vol_ratio:.0f}%) → skip')
@@ -562,13 +563,15 @@ def analyze(mover: dict):
         return
 
     log.info(f'{symbol}: chg={mover["change_pct"]:.1f}% dir={direction} '
-             f'ma={ma_dir} cruces={crosses} vol={vol_ratio:.0f}%')
+             f'ma={ma_dir} cruces={crosses} vol={vol_ratio:.0f}% ✓ filtros OK')
 
     # Niveles ZCT
     levels = get_zct_levels(symbol)
     if len(levels) < 2:
-        log.info(f'{symbol}: no hay suficientes niveles')
+        log.info(f'{symbol}: no hay suficientes niveles → skip')
         return
+
+    log.info(f'{symbol}: niveles = {", ".join(f"{k}={v:.6g}" for k,v in levels.items())}')
 
     # Cluster de 2 niveles (o 1 si pump fuerte ≥30%)
     cluster = find_level_cluster(
@@ -576,7 +579,14 @@ def analyze(mover: dict):
         change_pct=mover['change_pct']
     )
     if not cluster:
-        log.info(f'{symbol}: no se encontró cluster de niveles')
+        # Mostrar por qué no hay cluster: niveles en la dirección correcta y sus distancias
+        cands = [(k, v, abs(v-price)/price*100) for k, v in levels.items()
+                 if (direction == 'LONG' and v > price) or (direction == 'SHORT' and v < price)]
+        if cands:
+            cands_str = ', '.join(f'{k}={dist:.2f}%' for k,_,dist in cands)
+            log.info(f'{symbol}: sin cluster — candidatos en dirección: {cands_str} → skip')
+        else:
+            log.info(f'{symbol}: sin niveles en dirección {direction} → skip')
         return
 
     # Proximidad al nivel más cercano del cluster
