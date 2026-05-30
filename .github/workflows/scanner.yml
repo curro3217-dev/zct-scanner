@@ -12,11 +12,12 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 4        # se mata antes de que llegue el siguiente ciclo
+    permissions:
+      contents: write         # necesario para hacer push de alerts_log.json
 
     steps:
       - uses: actions/checkout@v4
         with:
-          # Token con permisos de escritura para poder hacer push del log
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@v5
@@ -37,7 +38,8 @@ jobs:
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          git add alerts_log.json || true
-          # Solo hacer commit si hay cambios (es decir, si se generó alguna alerta)
-          git diff --cached --quiet || git commit -m "chore: actualizar alerts_log [skip ci]"
-          git push || true
+          git add alerts_log.json
+          git diff --cached --quiet && echo "Sin alertas nuevas" && exit 0
+          git commit -m "chore: actualizar alerts_log [skip ci]"
+          git pull --rebase origin main
+          git push
