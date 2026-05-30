@@ -35,9 +35,9 @@ CLUSTER_TOP    = 2.0     # distancia maxima entre 2 niveles (top coins)
 CLUSTER_ALT    = 3.0     # distancia maxima entre 2 niveles (altcoins)
 
 # Trade parameters
-SL_PCT    = 0.01    # 1% stop loss
-TP_MULT   = 3.0     # 3R -> TP = SL x 3 = 3%
-LEVERAGE  = 5       # demo
+SL_PCT    = 0.02    # 2% stop loss
+TP_MULT   = 3.0     # 3R -> TP = SL x 3 = 6%
+LEVERAGE  = 10      # x10
 
 # ZCT / MA
 SMMA_LEN   = 30
@@ -487,8 +487,8 @@ def build_alert(mover: dict, cluster: dict, zct: dict,
         f'\n'
         f'<b>{dir_icon}  .  x{LEVERAGE} (demo)</b>\n'
         f'Entry: {fmt(price)}\n'
-        f'SL:    {fmt(sl)}  (1% max)\n'
-        f'TP:    {fmt(tp)}  (3% = 3R)\n'
+        f'SL:    {fmt(sl)}  (2% max)\n'
+        f'TP:    {fmt(tp)}  (6% = 3R)\n'
         f'\n<a href="{tv}">Ver en TradingView (5m)</a>\n'
         f'{datetime.now(timezone.utc).strftime("%H:%M UTC")}'
     )
