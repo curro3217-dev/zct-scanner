@@ -67,7 +67,6 @@ INTERVAL_MAP = {
     '1d':  'Day1',
 }
 
-_cooldowns: dict = {}
 
 ALERTS_LOG = Path(__file__).parent / 'alerts_log.json'
 
@@ -504,10 +503,25 @@ def analyze(mover: dict):
 
     key = f'{symbol}_{direction}'
     now = datetime.now(timezone.utc)
-    if key in _cooldowns:
-        elapsed = (now - _cooldowns[key]).total_seconds() / 60
-        if elapsed < COOLDOWN_MIN:
-            return
+
+    # Cooldown persistente: lee alerts_log.json para saber la ultima alerta
+    # (el dict _cooldowns en memoria no sobrevive entre runs de GitHub Actions)
+    if ALERTS_LOG.exists():
+        try:
+            with open(ALERTS_LOG, encoding='utf-8') as f:
+                log_data = json.load(f)
+            for rec in reversed(log_data):
+                if rec.get('symbol') == symbol and rec.get('direction') == direction:
+                    last_ts = datetime.fromisoformat(rec['timestamp'])
+                    if last_ts.tzinfo is None:
+                        last_ts = last_ts.replace(tzinfo=timezone.utc)
+                    elapsed = (now - last_ts).total_seconds() / 60
+                    if elapsed < COOLDOWN_MIN:
+                        log.info(f'{symbol}: cooldown activo ({elapsed:.0f}min < {COOLDOWN_MIN}min) -> skip')
+                        return
+                    break
+        except Exception as e:
+            log.warning(f'Cooldown check error: {e}')
 
     k15m = get_klines(symbol, '15m', limit=200)
     if not k15m:
@@ -595,7 +609,6 @@ def analyze(mover: dict):
         log.info(f'{symbol}: demasiado pegado al nivel ({dist_pct:.3f}%) -> skip')
         return
 
-    _cooldowns[key] = now
     msg = build_alert(mover, cluster, zct, near_lvl, dist_pct)
     send_telegram(msg)
     save_alert_to_log(mover, cluster, zct, near_lvl, dist_pct)
