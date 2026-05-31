@@ -1,187 +1,239 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-ZCT Backtester v8 — Test de CHANGE_THRESH 7% vs 10%
+TFZ Backtester — Trading From Zero (sustituye al backtester ZCT v8)
+===================================================================
+Replica la logica de entrada del scanner (main.py) pero recorriendo
+historico, para estimar el win-rate de la estrategia.
 
-  BREAKOUT  : LONG en PDH, P4HH, P1HH, P15mH. MA up, vol >= 120%, espera max 3 velas.
-              Requiere vela de entrada alcista (close > open). Distancia max 0.4%.
-              v8: aniadido filtro CHANGE_THRESH para comparar 7% vs 10%.
+Logica testeada (identica a main.py):
+  - Seleccion: movimiento >= 10% en 24h Y volumen >= $20M (reconstruidos
+    del propio historico de 15m). LONG si sube, SHORT si baja.
+  - 2+ niveles de liquidez claros y cercanos (gap <= 2%/3%) en la direccion.
+  - Nivel mas cercano a < 15% del precio.
+  - Consolidacion (base estrecha) pegada al nivel + BREAKOUT de la vela.
+  - Descarte de graficos no-tradeables.
+  - SL 2% | TP 6% (RR 1:3). Breakeven con > 25% de aciertos.
+  - Ventana de resultado: 8h (32 velas de 15m), igual que checker.py.
 
-  MR descartado: WR 19.2% con RR 2:1 — necesita >33% para breakeven. No tiene edge.
-
-  SL = 1%   TP = 2%   (RR 2:1 — rentable con >33% WR)
-  Objetivo: 50%+ WR
+DIVERGENCIA vs produccion: el backtest corre sobre 15m (no 5m) para tener
+~15 dias de historico con el limite de klines de MEXC. La estructura de la
+estrategia es la misma; solo cambia el timeframe de las velas.
 
 Uso: python backtest.py
 Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (env vars)
 """
 
-import os, time, csv, logging, html as html_mod
+import os
+import time
+import csv
+import logging
 from datetime import datetime, timezone
 
 import requests
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # ══════════════════════════════════════════════════════════
-#  CONFIG
+#  CONFIG  (mismos umbrales que main.py)
 # ══════════════════════════════════════════════════════════
-PROXIMITY_PCT   = 0.004       # 0.4% de distancia al nivel
-MIN_DIST_PCT    = 0.20        # distancia minima al nivel (%)
-SL_PCT          = 0.01        # Stop Loss 1%
-TP_PCT          = SL_PCT * 2  # Take Profit 2% (RR 2:1)
-SMMA_LEN        = 30
-VOL_MA_LEN      = 20
-CROSS_LB        = 50
-MA_DIR_LB       = 5
-MA_DIR_THR      = 0.08
+MIN_VOLUME_USD   = 20_000_000   # volumen 24h reconstruido (suma de 96 velas)
+MIN_MOVE_PCT     = 10.0         # movimiento minimo 24h
+SL_PCT           = 0.02         # 2%
+TP_PCT           = 0.06         # 6%  (RR 1:3)
 
-OUTCOME_CANDLES = 32          # 8h de ventana para que el trade resuelva
-WARMUP_CANDLES  = SMMA_LEN + CROSS_LB + MA_DIR_LB + 5
-CHANGE_LB       = 96          # 96 velas x 15m = 24h de lookback para el cambio
+PIVOT_K          = 2
+LEVEL_TOL_PCT    = 0.006
+MIN_TOUCHES      = 2
+MIN_LEVELS       = 2
+GAP_TOP_COIN     = 0.020
+GAP_ALTCOIN      = 0.030
+MAX_DIST_TO_LEVEL = 0.15
+TOP_COINS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX",
+             "LINK", "TRX", "DOT", "MATIC", "LTC", "BCH", "TON"}
 
-# Filtro de mover: solo senales cuando la moneda lleva X% de cambio en 24h
-# Actualmente en el scanner es 10%. Testeamos 7% para ver si hay mas senales sin perder WR.
-CHANGE_THRESH   = 7.0         # % minimo de cambio 24h para considerar la senal
+CONSOL_LOOKBACK  = 10
+CONSOL_MAX_RANGE = 0.030
+CONSOL_TO_LEVEL  = 0.030
 
-# BREAKOUT — solo LONG con momentum real
-BKOUT_MAX_CROSSES = 1
-BKOUT_MIN_VOL     = 120       # vol minimo 120%
-BKOUT_MAX_WAIT    = 3         # esperar max 3 velas
-BKOUT_LEVELS      = {'PDH', 'P4HH', 'P1HH', 'P15mH'}
+WICK_LOOKBACK    = 30
+MAX_MEAN_WICK    = 0.70
+MAX_GAP_PCT      = 0.025
+MAX_GAPS_ALLOWED = 3
 
-INTERVAL_MAP = {'15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1'}
+LEVEL_WINDOW     = 200          # velas usadas para detectar niveles (= limit live)
+CHANGE_LB        = 96           # 96 velas de 15m = 24h
+OUTCOME_CANDLES  = 32           # 8h de ventana (igual que checker.py)
+COOLDOWN_CANDLES = 8            # 2h entre setups del mismo symbol+side (= COOLDOWN_MIN/15)
 
+BREAKEVEN_WR     = 25.0         # con RR 1:3 necesitas > 25% de aciertos
+
+INTERVAL_MAP = {"15m": "Min15", "1h": "Min60", "4h": "Hour4", "1d": "Day1"}
+
+# Universo de monedas para el backtest (muestra; el scanner en vivo escanea
+# todos los perpetuos, aqui usamos una lista fija liquida y volatil).
 COINS = [
-    'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'SOL_USDT', 'XRP_USDT',
-    'DOGE_USDT', 'ADA_USDT', 'AVAX_USDT', 'LINK_USDT', 'DOT_USDT',
-    'LTC_USDT', 'UNI_USDT', 'ATOM_USDT', 'NEAR_USDT', 'APT_USDT',
-    'ARB_USDT', 'OP_USDT', 'INJ_USDT', 'SUI_USDT', 'TRX_USDT',
-    'TON_USDT', 'WIF_USDT', 'JUP_USDT', 'SEI_USDT', 'PEPE_USDT',
-    'BONK_USDT', 'TIA_USDT', 'PENDLE_USDT', 'FTM_USDT', 'MATIC_USDT',
+    "BTC_USDT", "ETH_USDT", "BNB_USDT", "SOL_USDT", "XRP_USDT",
+    "DOGE_USDT", "ADA_USDT", "AVAX_USDT", "LINK_USDT", "DOT_USDT",
+    "LTC_USDT", "UNI_USDT", "ATOM_USDT", "NEAR_USDT", "APT_USDT",
+    "ARB_USDT", "OP_USDT", "INJ_USDT", "SUI_USDT", "TRX_USDT",
+    "TON_USDT", "WIF_USDT", "JUP_USDT", "SEI_USDT", "PEPE_USDT",
+    "BONK_USDT", "TIA_USDT", "PENDLE_USDT", "FTM_USDT", "MATIC_USDT",
 ]
 
-TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 
 # ══════════════════════════════════════════════════════════
 #  API MEXC
 # ══════════════════════════════════════════════════════════
-def get_klines(symbol, interval, limit=200):
+def get_klines(symbol, interval, limit=1500):
     try:
         r = requests.get(
-            f'https://contract.mexc.com/api/v1/contract/kline/{symbol}',
-            params={'interval': INTERVAL_MAP[interval], 'limit': limit},
-            timeout=12,
+            f"https://contract.mexc.com/api/v1/contract/kline/{symbol}",
+            params={"interval": INTERVAL_MAP[interval], "limit": limit},
+            timeout=15,
         )
-        d = r.json().get('data', {})
-        if not d or 'close' not in d or not d['close']:
+        d = r.json().get("data", {})
+        if not d or "close" not in d or not d["close"]:
             return None
-        keys = ('open', 'close', 'high', 'low', 'vol', 'amount', 'time')
+        keys = ("open", "close", "high", "low", "vol", "amount", "time")
         return {k: [float(x) for x in d[k]] for k in keys if k in d}
-    except Exception as e:
-        log.error(f'{symbol} {interval}: {e}')
+    except Exception as e:  # noqa: BLE001
+        log.error(f"{symbol} {interval}: {e}")
         return None
 
 
 # ══════════════════════════════════════════════════════════
-#  ANALISIS ZCT
+#  DETECCION DE NIVELES (identica a main.py, sobre dicts de velas)
 # ══════════════════════════════════════════════════════════
-def calc_smma(closes, length=30):
-    if len(closes) < length:
+def base_asset(symbol):
+    return symbol.split("_")[0]
+
+
+def _window(arrs, lo, hi):
+    """Construye lista de velas dict desde arrays paralelos, indices [lo, hi]."""
+    o, h, l, c = arrs["open"], arrs["high"], arrs["low"], arrs["close"]
+    out = []
+    for j in range(lo, hi + 1):
+        out.append({"o": o[j], "h": h[j], "l": l[j], "c": c[j]})
+    return out
+
+
+def pivots(candles, k, kind):
+    res = []
+    n = len(candles)
+    for i in range(k, n - k):
+        if kind == "high":
+            v = candles[i]["h"]
+            if all(candles[j]["h"] <= v for j in range(i - k, i + k + 1) if j != i):
+                res.append(i)
+        else:
+            v = candles[i]["l"]
+            if all(candles[j]["l"] >= v for j in range(i - k, i + k + 1) if j != i):
+                res.append(i)
+    return res
+
+
+def cluster_levels(prices, tol):
+    if not prices:
         return []
-    sma = sum(closes[:length]) / length
-    result = [sma]
-    for c in closes[length:]:
-        result.append((result[-1] * (length - 1) + c) / length)
-    return result
+    prices = sorted(prices)
+    clusters = [[prices[0]]]
+    for p in prices[1:]:
+        if abs(p - clusters[-1][-1]) / clusters[-1][-1] <= tol:
+            clusters[-1].append(p)
+        else:
+            clusters.append([p])
+    return [(sum(c) / len(c), len(c)) for c in clusters]
 
 
-def count_crosses(closes, ma, lb=50):
-    n = min(lb, len(closes) - 1, len(ma) - 1)
-    crosses = 0
-    for i in range(1, n + 1):
-        above_now  = closes[-i]     >= ma[-i]
-        above_prev = closes[-(i+1)] >= ma[-(i+1)]
-        if above_now != above_prev:
-            crosses += 1
-    return crosses
+def liquidity_levels(candles, side):
+    kind = "high" if side == "LONG" else "low"
+    idx = pivots(candles, PIVOT_K, kind)
+    prices = [candles[i][kind[0]] for i in idx]
+    levels = cluster_levels(prices, LEVEL_TOL_PCT)
+    return [(p, n) for (p, n) in levels if n >= MIN_TOUCHES]
 
 
-def get_ma_direction(ma, lb=5):
-    if len(ma) < lb + 1:
-        return 'sideways'
-    pct = (ma[-1] - ma[-(lb+1)]) / ma[-(lb+1)] * 100
-    if pct > MA_DIR_THR:  return 'up'
-    if pct < -MA_DIR_THR: return 'down'
-    return 'sideways'
+def is_untradeable(candles):
+    recent = candles[-WICK_LOOKBACK:]
+    wicks = []
+    for c in recent:
+        rng = c["h"] - c["l"]
+        if rng <= 0:
+            continue
+        body = abs(c["c"] - c["o"])
+        wicks.append((rng - body) / rng)
+    if wicks and (sum(wicks) / len(wicks)) > MAX_MEAN_WICK:
+        return True
+    gaps = 0
+    for i in range(1, len(recent)):
+        prev = recent[i - 1]["c"]
+        if prev and abs(recent[i]["o"] - prev) / prev > MAX_GAP_PCT:
+            gaps += 1
+    return gaps > MAX_GAPS_ALLOWED
 
 
-def analyze_zct_window(closes, opens, amounts):
-    ma = calc_smma(closes, SMMA_LEN)
-    if not ma:
-        return {}
-    crosses   = count_crosses(closes, ma, CROSS_LB)
-    direction = get_ma_direction(ma, MA_DIR_LB)
-    vol_ma    = sum(amounts[-VOL_MA_LEN:]) / VOL_MA_LEN if len(amounts) >= VOL_MA_LEN else None
-    vol_ratio = amounts[-1] / vol_ma * 100 if vol_ma else 100.0
-    bullish_candle = closes[-1] > opens[-1] if opens else True
-    return {
-        'crosses': crosses,
-        'direction': direction,
-        'vol_ratio': vol_ratio,
-        'bullish_candle': bullish_candle,
-    }
-
-
-# ══════════════════════════════════════════════════════════
-#  NIVELES HISTORICOS
-# ══════════════════════════════════════════════════════════
-def compute_levels_at(candle_time, d1, d4h, d1h, d15m):
-    levels = {}
-    if d1 and 'time' in d1:
-        cdate = datetime.utcfromtimestamp(candle_time).date()
-        ph, pl = [], []
-        for i, t in enumerate(d1['time']):
-            if datetime.utcfromtimestamp(t).date() < cdate:
-                ph.append(d1['high'][i])
-                pl.append(d1['low'][i])
-        if ph:
-            levels['PDH'] = ph[-1]
-            levels['PDL'] = pl[-1]
-    if d4h and 'time' in d4h:
-        prev = [(t, h, l) for t, h, l in zip(d4h['time'], d4h['high'], d4h['low']) if t < candle_time]
-        if prev:
-            levels['P4HH'] = prev[-1][1]
-            levels['P4HL'] = prev[-1][2]
-    if d1h and 'time' in d1h:
-        prev = [(t, h, l) for t, h, l in zip(d1h['time'], d1h['high'], d1h['low']) if t < candle_time]
-        if prev:
-            levels['P1HH'] = prev[-1][1]
-            levels['P1HL'] = prev[-1][2]
-    if d15m and 'time' in d15m:
-        prev = [(t, h, l) for t, h, l in zip(d15m['time'], d15m['high'], d15m['low']) if t < candle_time]
-        if prev:
-            levels['P15mH'] = prev[-1][1]
-            levels['P15mL'] = prev[-1][2]
-    return levels
+def breakout_at_last(candles, side, nearest_level):
+    """
+    Igual que find_consolidation de main.py pero el trigger es SIEMPRE la
+    ultima vela de 'candles' (en el backtest evaluamos cada vela como trigger,
+    no necesitamos mirar atras). Devuelve dict o None.
+    """
+    if len(candles) < CONSOL_LOOKBACK + 1:
+        return None
+    base = candles[-(CONSOL_LOOKBACK + 1):-1]
+    trigger = candles[-1]
+    highs = [c["h"] for c in base]
+    lows = [c["l"] for c in base]
+    hi, lo = max(highs), min(lows)
+    if lo <= 0:
+        return None
+    rng_pct = (hi - lo) / lo
+    if rng_pct > CONSOL_MAX_RANGE:
+        return None
+    trng = trigger["h"] - trigger["l"]
+    tbody = abs(trigger["c"] - trigger["o"])
+    if trng > 0 and tbody / trng < 0.4:
+        return None
+    if side == "LONG":
+        if (nearest_level - hi) / nearest_level > CONSOL_TO_LEVEL:
+            return None
+        if not (trigger["c"] > hi):
+            return None
+    else:
+        if (lo - nearest_level) / nearest_level > CONSOL_TO_LEVEL:
+            return None
+        if not (trigger["c"] < lo):
+            return None
+    return {"consol_high": hi, "consol_low": lo, "range_pct": round(rng_pct * 100, 2)}
 
 
 # ══════════════════════════════════════════════════════════
 #  RESULTADO DEL TRADE
 # ══════════════════════════════════════════════════════════
-def simulate_outcome(direction, entry_price, future_highs, future_lows):
-    tp = entry_price * (1 + TP_PCT) if direction == 'LONG' else entry_price * (1 - TP_PCT)
-    sl = entry_price * (1 - SL_PCT) if direction == 'LONG' else entry_price * (1 + SL_PCT)
+def simulate_outcome(direction, entry, future_highs, future_lows):
+    if direction == "LONG":
+        tp = entry * (1 + TP_PCT)
+        sl = entry * (1 - SL_PCT)
+    else:
+        tp = entry * (1 - TP_PCT)
+        sl = entry * (1 + SL_PCT)
     for high, low in zip(future_highs, future_lows):
-        if direction == 'LONG':
-            if high >= tp: return 'WIN'
-            if low  <= sl: return 'LOSS'
+        if direction == "LONG":
+            if high >= tp:
+                return "WIN"
+            if low <= sl:
+                return "LOSS"
         else:
-            if low  <= tp: return 'WIN'
-            if high >= sl: return 'LOSS'
-    return 'TIMEOUT'
+            if low <= tp:
+                return "WIN"
+            if high >= sl:
+                return "LOSS"
+    return "TIMEOUT"
 
 
 # ══════════════════════════════════════════════════════════
@@ -189,261 +241,210 @@ def simulate_outcome(direction, entry_price, future_highs, future_lows):
 # ══════════════════════════════════════════════════════════
 def backtest_coin(symbol):
     results = []
-
-    d15m = get_klines(symbol, '15m', limit=1500)
-    time.sleep(0.15)
-    d1h  = get_klines(symbol, '1h',  limit=500)
-    time.sleep(0.15)
-    d4h  = get_klines(symbol, '4h',  limit=200)
-    time.sleep(0.15)
-    d1   = get_klines(symbol, '1d',  limit=200)
+    d15 = get_klines(symbol, "15m", limit=1500)
     time.sleep(0.2)
-
-    min_candles = WARMUP_CANDLES + OUTCOME_CANDLES + BKOUT_MAX_WAIT + 5
-    if not d15m or len(d15m.get('close', [])) < min_candles:
-        n_got = len(d15m['close']) if d15m else 0
-        log.warning(f'{symbol}: datos insuficientes ({n_got} velas 15m)')
+    min_needed = LEVEL_WINDOW + CHANGE_LB + OUTCOME_CANDLES + 5
+    if not d15 or len(d15.get("close", [])) < min_needed:
+        n_got = len(d15["close"]) if d15 else 0
+        log.warning(f"{symbol}: datos insuficientes ({n_got} velas 15m)")
         return []
 
-    closes  = d15m['close']
-    opens   = d15m.get('open', closes)
-    highs   = d15m['high']
-    lows    = d15m['low']
-    amounts = d15m.get('amount', d15m.get('vol', [1.0] * len(closes)))
-    times   = d15m.get('time', [])
-    n       = len(closes)
+    closes = d15["close"]
+    highs = d15["high"]
+    lows = d15["low"]
+    amounts = d15.get("amount", d15.get("vol", [0.0] * len(closes)))
+    n = len(closes)
+    max_gap = GAP_TOP_COIN if base_asset(symbol) in TOP_COINS else GAP_ALTCOIN
 
-    cd_bkout = {}
+    last_signal = {}  # (side) -> idx, para cooldown
+    start = max(LEVEL_WINDOW, CHANGE_LB)
+    end = n - OUTCOME_CANDLES - 1
 
-    end_idx = n - OUTCOME_CANDLES - BKOUT_MAX_WAIT - 2
-
-    for idx in range(WARMUP_CANDLES, end_idx):
+    for idx in range(start, end):
         price = closes[idx]
         if price <= 0:
             continue
 
-        zct = analyze_zct_window(closes[:idx+1], opens[:idx+1], amounts[:idx+1])
-        if not zct:
+        # --- filtro de volumen 24h (suma de las ultimas 96 velas) ---------- #
+        vol24 = sum(amounts[idx - CHANGE_LB + 1: idx + 1])
+        if vol24 < MIN_VOLUME_USD:
             continue
 
-        crosses        = zct['crosses']
-        vol_ratio      = zct['vol_ratio']
-        ma_dir         = zct['direction']
-        bullish_candle = zct['bullish_candle']
+        # --- filtro de movimiento 24h y direccion -------------------------- #
+        ref = closes[idx - CHANGE_LB]
+        if ref <= 0:
+            continue
+        ch24 = (price - ref) / ref * 100.0
+        if ch24 >= MIN_MOVE_PCT:
+            side = "LONG"
+        elif ch24 <= -MIN_MOVE_PCT:
+            side = "SHORT"
+        else:
+            continue
 
-        candle_time = times[idx] if idx < len(times) else 0
-        levels = compute_levels_at(candle_time, d1, d4h, d1h, d15m)
+        # --- cooldown ------------------------------------------------------ #
+        if side in last_signal and (idx - last_signal[side]) < COOLDOWN_CANDLES:
+            continue
+
+        # --- ventana de niveles -------------------------------------------- #
+        w = _window(d15, idx - LEVEL_WINDOW + 1, idx)
+        if is_untradeable(w):
+            continue
+        levels = liquidity_levels(w, side)
         if not levels:
             continue
 
-        ref_idx    = max(0, idx - CHANGE_LB)
-        change_pct = (price - closes[ref_idx]) / closes[ref_idx] * 100 if closes[ref_idx] > 0 else 0.0
-
-        # Filtro mover: solo operar cuando la moneda lleva >= CHANGE_THRESH% en 24h
-        if abs(change_pct) < CHANGE_THRESH:
+        if side == "LONG":
+            target = sorted([(p, c) for (p, c) in levels if p > price], key=lambda x: x[0])
+        else:
+            target = sorted([(p, c) for (p, c) in levels if p < price],
+                            key=lambda x: x[0], reverse=True)
+        if len(target) < MIN_LEVELS:
             continue
 
-        for lvl_name, lvl_price in levels.items():
-            if lvl_price <= 0:
-                continue
+        l1, l2 = target[0][0], target[1][0]
+        nearest = l1
+        dist = abs(nearest - price) / price
+        if dist > MAX_DIST_TO_LEVEL:
+            continue
+        gap = abs(l2 - l1) / l1
+        if gap > max_gap:
+            continue
 
-            dist_pct_val = abs(lvl_price - price) / price * 100
-            if not (MIN_DIST_PCT <= dist_pct_val <= PROXIMITY_PCT * 100):
-                continue
+        consol = breakout_at_last(w, side, nearest)
+        if not consol:
+            continue
 
-            ts_str = datetime.utcfromtimestamp(candle_time).strftime('%m-%d %H:%M') if candle_time else '?'
+        # --- resultado ----------------------------------------------------- #
+        fh = highs[idx + 1: idx + 1 + OUTCOME_CANDLES]
+        fl = lows[idx + 1: idx + 1 + OUTCOME_CANDLES]
+        if len(fh) < 4:
+            continue
+        outcome = simulate_outcome(side, price, fh, fl)
+        last_signal[side] = idx
 
-            # BREAKOUT LONG
-            if (lvl_name in BKOUT_LEVELS
-                    and crosses <= BKOUT_MAX_CROSSES
-                    and vol_ratio >= BKOUT_MIN_VOL
-                    and ma_dir == 'up'
-                    and lvl_price > price
-                    and bullish_candle):
+        ts = (datetime.utcfromtimestamp(d15["time"][idx]).strftime("%m-%d %H:%M")
+              if "time" in d15 and idx < len(d15["time"]) else "?")
+        results.append({
+            "symbol": symbol,
+            "ts": ts,
+            "direction": side,
+            "dist_pct": round(dist * 100, 2),
+            "gap_pct": round(gap * 100, 2),
+            "change_pct": round(ch24, 1),
+            "consol_range_pct": consol["range_pct"],
+            "outcome": outcome,
+        })
 
-                cd_key = (lvl_name, 'BKOUT', 'LONG')
-                if cd_key not in cd_bkout or (idx - cd_bkout[cd_key]) >= 16:
-                    entry_idx = None
-                    for j in range(1, BKOUT_MAX_WAIT + 1):
-                        if idx + j >= n:
-                            break
-                        if closes[idx + j] > lvl_price:
-                            entry_idx = idx + j
-                            break
-
-                    if entry_idx is not None:
-                        ep = closes[entry_idx]
-                        fh = highs[entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
-                        fl = lows [entry_idx+1 : entry_idx+1+OUTCOME_CANDLES]
-                        if len(fh) >= 4:
-                            out = simulate_outcome('LONG', ep, fh, fl)
-                            if out != 'TIMEOUT':
-                                cd_bkout[cd_key] = idx
-                                results.append({
-                                    'strategy':   'BREAKOUT',
-                                    'symbol':     symbol,
-                                    'ts':         ts_str,
-                                    'direction':  'LONG',
-                                    'level':      lvl_name,
-                                    'crosses':    crosses,
-                                    'ma_dir':     ma_dir,
-                                    'vol_ratio':  round(vol_ratio, 1),
-                                    'dist_pct':   round(dist_pct_val, 3),
-                                    'change_pct': round(change_pct, 1),
-                                    'outcome':    out,
-                                })
-
-    log.info(f'{symbol}: {len(results)} setups')
+    log.info(f"{symbol}: {len(results)} setups")
     return results
 
 
 # ══════════════════════════════════════════════════════════
 #  ANALISIS
 # ══════════════════════════════════════════════════════════
-def win_rate(subset):
-    if not subset: return 0.0
-    return sum(1 for r in subset if r['outcome'] == 'WIN') / len(subset) * 100
+def _wr(sub):
+    resolved = [r for r in sub if r["outcome"] in ("WIN", "LOSS")]
+    if not resolved:
+        return (0, 0, 0.0)
+    w = sum(1 for r in resolved if r["outcome"] == "WIN")
+    return (w, len(resolved), w / len(resolved) * 100)
 
 
-def analyze_strategy(rows, label):
-    if not rows:
-        return {}
+def analyze(rows):
     total = len(rows)
-    wins  = sum(1 for r in rows if r['outcome'] == 'WIN')
-    wr    = wins / total * 100
+    wins = sum(1 for r in rows if r["outcome"] == "WIN")
+    losses = sum(1 for r in rows if r["outcome"] == "LOSS")
+    timeouts = sum(1 for r in rows if r["outcome"] == "TIMEOUT")
+    resolved = wins + losses
+    wr = wins / resolved * 100 if resolved else 0.0
 
-    lvl_groups = {
-        'PDH':      ('PDH',),
-        'P4H H/L':  ('P4HH', 'P4HL'),
-        'P1H H/L':  ('P1HH', 'P1HL'),
-        'P15m H/L': ('P15mH', 'P15mL'),
-    }
-    by_level = {}
-    for lbl, names in lvl_groups.items():
-        sub = [r for r in rows if r.get('level', '') in names]
+    by_dir = {}
+    for d in ("LONG", "SHORT"):
+        sub = [r for r in rows if r["direction"] == d]
         if sub:
-            w = sum(1 for r in sub if r['outcome'] == 'WIN')
-            by_level[lbl] = (w, len(sub), w / len(sub) * 100)
+            by_dir[d] = _wr(sub)
 
-    vol_bins = [(120, 150, '120-150%'), (150, 200, '150-200%'),
-                (200, 300, '200-300%'), (300, 9999, '300%+')]
-    by_vol = {}
-    for lo, hi, lbl in vol_bins:
-        sub = [r for r in rows if lo <= r['vol_ratio'] < hi]
+    by_gap = {}
+    for lo, hi, lbl in [(0, 1, "0-1%"), (1, 2, "1-2%"), (2, 3, "2-3%")]:
+        sub = [r for r in rows if lo <= r["gap_pct"] < hi]
         if sub:
-            w = sum(1 for r in sub if r['outcome'] == 'WIN')
-            by_vol[lbl] = (w, len(sub), w / len(sub) * 100)
+            by_gap[lbl] = _wr(sub)
 
     by_dist = {}
-    dist_bins = [(0.20, 0.30, '0.2-0.3%'), (0.30, 0.40, '0.3-0.4%'), (0.40, 0.51, '0.4-0.5%')]
-    for lo, hi, lbl in dist_bins:
-        sub = [r for r in rows if lo <= r['dist_pct'] < hi]
+    for lo, hi, lbl in [(0, 3, "0-3%"), (3, 7, "3-7%"), (7, 15.01, "7-15%")]:
+        sub = [r for r in rows if lo <= r["dist_pct"] < hi]
         if sub:
-            w = sum(1 for r in sub if r['outcome'] == 'WIN')
-            by_dist[lbl] = (w, len(sub), w / len(sub) * 100)
+            by_dist[lbl] = _wr(sub)
 
-    # Desglose por rango de cambio 24h
-    change_bins = [(7, 10, '7-10%'), (10, 15, '10-15%'), (15, 25, '15-25%'), (25, 999, '25%+')]
     by_change = {}
-    for lo, hi, lbl in change_bins:
-        sub = [r for r in rows if lo <= abs(r['change_pct']) < hi]
+    for lo, hi, lbl in [(10, 15, "10-15%"), (15, 25, "15-25%"), (25, 1e9, "25%+")]:
+        sub = [r for r in rows if lo <= abs(r["change_pct"]) < hi]
         if sub:
-            w = sum(1 for r in sub if r['outcome'] == 'WIN')
-            by_change[lbl] = (w, len(sub), w / len(sub) * 100)
+            by_change[lbl] = _wr(sub)
 
     return {
-        'label': label, 'total': total, 'wins': wins, 'wr': wr,
-        'by_vol': by_vol,
-        'by_dist': by_dist,
-        'by_level': by_level,
-        'by_change': by_change,
+        "total": total, "wins": wins, "losses": losses, "timeouts": timeouts,
+        "resolved": resolved, "wr": wr,
+        "by_dir": by_dir, "by_gap": by_gap, "by_dist": by_dist, "by_change": by_change,
     }
 
 
 # ══════════════════════════════════════════════════════════
 #  REPORTE TELEGRAM
 # ══════════════════════════════════════════════════════════
-def fmt_vol_section(by_vol):
-    if not by_vol:
-        return ''
-    lines = ['Por volumen en el momento de la senal:']
-    for lbl, (w, n, wr) in sorted(by_vol.items(), key=lambda x: -x[1][2]):
-        lines.append(f'  {lbl}: {wr:.0f}% de aciertos ({w} ganadas / {n} total)')
-    return '\n'.join(lines)
+def _fmt_section(title, d):
+    if not d:
+        return ""
+    lines = [title]
+    for lbl, (w, nn, wr) in sorted(d.items(), key=lambda x: -x[1][2]):
+        lines.append(f"  {lbl}: {wr:.0f}% de aciertos ({w} ganadas / {nn} resueltas)")
+    return "\n".join(lines)
 
 
-def fmt_level_section(by_level):
-    if not by_level:
-        return ''
-    level_names = {
-        'PDH':      'Maximo del dia anterior',
-        'P4H H/L':  'Maximo de la ultima vela de 4h',
-        'P1H H/L':  'Maximo de la ultima vela de 1h',
-        'P15m H/L': 'Maximo de la ultima vela de 15m',
-    }
-    lines = ['Por nivel de precio usado:']
-    for lbl, (w, n, wr) in sorted(by_level.items(), key=lambda x: -x[1][2]):
-        nombre = level_names.get(lbl, lbl)
-        lines.append(f'  {nombre}: {wr:.0f}% de aciertos ({w} ganadas / {n} total)')
-    return '\n'.join(lines)
-
-
-def fmt_change_section(by_change):
-    if not by_change:
-        return ''
-    lines = ['Por fuerza del movimiento 24h en el momento de la senal:']
-    for lbl, (w, n, wr) in sorted(by_change.items(), key=lambda x: x[0]):
-        lines.append(f'  {lbl}: {wr:.0f}% de aciertos ({w} ganadas / {n} total)')
-    return '\n'.join(lines)
-
-
-def build_report(bkout, n_coins):
-    ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-
-    if bkout:
-        total = bkout['total']
-        wins  = bkout['wins']
-        wr    = bkout['wr']
-
-        if total < 20:
-            conclusion = 'AVISO: Solo ' + str(total) + ' operaciones — datos insuficientes para concluir nada'
-        elif wr >= 50:
-            conclusion = 'RENTABLE: ' + str(round(wr)) + '% de aciertos con ' + str(total) + ' operaciones'
-        elif wr >= 33:
-            conclusion = 'EN EL LIMITE: ' + str(round(wr)) + '% de aciertos con ' + str(total) + ' operaciones'
-        else:
-            conclusion = 'NO RENTABLE: solo ' + str(round(wr)) + '% de aciertos con ' + str(total) + ' operaciones'
-
-        bkout_lines = [
-            'Aciertos: ' + str(round(wr)) + '% — ' + str(wins) + ' ganadas / ' + str(total - wins) + ' perdidas / ' + str(total) + ' operaciones',
-            conclusion,
-            '',
-            fmt_vol_section(bkout.get('by_vol', {})),
-            '',
-            fmt_level_section(bkout.get('by_level', {})),
-            '',
-            fmt_change_section(bkout.get('by_change', {})),
-        ]
-        bkout_str = '\n'.join(l for l in bkout_lines if l is not None)
+def build_report(a, n_coins):
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    if a["total"] == 0:
+        body = "Sin setups en el periodo analizado."
+        conclusion = ""
     else:
-        bkout_str = 'Sin datos'
+        wr = a["wr"]
+        if a["resolved"] < 20:
+            conclusion = (f"AVISO: solo {a['resolved']} operaciones resueltas — "
+                          "muestra insuficiente para concluir.")
+        elif wr >= 40:
+            conclusion = f"FUERTE: {wr:.0f}% de aciertos (breakeven en 25%)."
+        elif wr >= BREAKEVEN_WR:
+            conclusion = f"RENTABLE: {wr:.0f}% de aciertos, por encima del 25% de breakeven."
+        else:
+            conclusion = f"NO RENTABLE: {wr:.0f}% de aciertos, por debajo del 25% de breakeven."
+
+        body = "\n".join(x for x in [
+            (f"Aciertos: {wr:.0f}% — {a['wins']} ganadas / {a['losses']} perdidas / "
+             f"{a['resolved']} resueltas"),
+            f"Timeouts (no tocaron TP ni SL en 8h): {a['timeouts']}  ·  Total setups: {a['total']}",
+            conclusion,
+            "",
+            _fmt_section("Por direccion:", a["by_dir"]),
+            "",
+            _fmt_section("Por cercania entre niveles (gap):", a["by_gap"]),
+            "",
+            _fmt_section("Por distancia del precio al nivel:", a["by_dist"]),
+            "",
+            _fmt_section("Por fuerza del movimiento 24h:", a["by_change"]),
+        ] if x is not None)
 
     parts = [
-        '📊 ZCT Backtest v8 — Filtro cambio 24h >= ' + str(CHANGE_THRESH) + '%',
-        'Analizadas ' + str(n_coins) + ' monedas durante los ultimos 15 dias',
-        'Stop Loss 1% · Take Profit 2%',
-        'Para ganar dinero necesitas acertar mas del 33% de las veces',
-        '',
-        'ESTRATEGIA BREAKOUT (operar el impulso)',
-        bkout_str,
-        '',
-        'ESTRATEGIA CONTRATENDENCIA',
-        'Aciertos: 19% — 73 operaciones — ABANDONADA',
-        'No llega al minimo del 33% para ser rentable',
-        '',
+        "📊 TFZ Backtest — Trading From Zero",
+        f"Analizadas {n_coins} monedas en ~15 dias (velas de 15m)",
+        "Stop Loss 2% · Take Profit 6% · RR 1:3",
+        "Para tener edge necesitas acertar mas del 25% de las veces",
+        "",
+        body,
+        "",
         ts,
     ]
-    return '\n'.join(parts)
+    return "\n".join(parts)
 
 
 def send_telegram(msg):
@@ -452,15 +453,15 @@ def send_telegram(msg):
         return
     try:
         r = requests.post(
-            f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
-            data={'chat_id': TELEGRAM_CHAT_ID, 'text': msg,
-                  'disable_web_page_preview': 'true'},
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": TELEGRAM_CHAT_ID, "text": msg,
+                  "disable_web_page_preview": "true"},
             timeout=10,
         )
         if not r.ok:
-            log.error(f'Telegram: {r.text}')
-    except Exception as e:
-        log.error(f'Telegram: {e}')
+            log.error(f"Telegram: {r.text}")
+    except Exception as e:  # noqa: BLE001
+        log.error(f"Telegram: {e}")
         print(msg)
 
 
@@ -468,40 +469,37 @@ def send_telegram(msg):
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
-    log.info('=== ZCT Backtester v8 iniciando ===')
-    log.info(f'SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=2:1  CHANGE_THRESH={CHANGE_THRESH}%')
-    log.info(f'BREAKOUT: LONG, niveles={BKOUT_LEVELS}, MA up, vol>={BKOUT_MIN_VOL}%, wait<={BKOUT_MAX_WAIT}v, dist<=0.4%')
-    log.info('MR: descartado (WR 19% < 33% breakeven con RR 2:1)')
-    all_results = []
+    log.info("=== TFZ Backtester iniciando ===")
+    log.info(f"SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=1:3  "
+             f"move>={MIN_MOVE_PCT}%  vol>=${MIN_VOLUME_USD/1e6:.0f}M")
 
+    all_results = []
     for i, symbol in enumerate(COINS):
         try:
-            log.info(f'[{i+1}/{len(COINS)}] {symbol}')
-            results = backtest_coin(symbol)
-            all_results.extend(results)
-        except Exception as e:
-            log.error(f'{symbol}: {e}')
+            log.info(f"[{i+1}/{len(COINS)}] {symbol}")
+            all_results.extend(backtest_coin(symbol))
+        except Exception as e:  # noqa: BLE001
+            log.error(f"{symbol}: {e}")
 
-    log.info(f'Total setups: {len(all_results)}')
+    log.info(f"Total setups: {len(all_results)}")
 
-    csv_path = os.path.join(os.path.dirname(__file__), 'backtest_results.csv')
-    fieldnames = ['strategy', 'symbol', 'ts', 'direction', 'level',
-                  'crosses', 'ma_dir', 'vol_ratio', 'dist_pct', 'change_pct', 'outcome']
     if all_results:
-        with open(csv_path, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "backtest_results.csv")
+        fields = ["symbol", "ts", "direction", "dist_pct", "gap_pct",
+                  "change_pct", "consol_range_pct", "outcome"]
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(all_results)
-        log.info(f'CSV guardado: {csv_path}')
+        log.info(f"CSV guardado: {csv_path}")
 
-    bkout_rows = [r for r in all_results if r['strategy'] == 'BREAKOUT']
-    bkout_analysis = analyze_strategy(bkout_rows, 'BREAKOUT')
-
-    report = build_report(bkout_analysis, len(COINS))
-    log.info('Enviando reporte...')
+    analysis = analyze(all_results)
+    report = build_report(analysis, len(COINS))
+    log.info("Enviando reporte...")
     send_telegram(report)
-    log.info('=== Backtest v8 completado ===')
+    log.info("=== Backtest completado ===")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
