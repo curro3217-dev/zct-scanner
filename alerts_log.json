@@ -69,5 +69,59 @@
     "timestamp": "2026-05-31T11:10:01.611937+00:00",
     "created_ts": 1780225801,
     "status": "OPEN"
+  },
+  {
+    "id": "HYPE_USDT_1780229972",
+    "symbol": "HYPE_USDT",
+    "direction": "LONG",
+    "entry_price": 68.014,
+    "sl": 66.65372,
+    "tp": 72.09484,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      68.107,
+      68.9594482759
+    ],
+    "level_gap_pct": 1.25,
+    "dist_to_level_pct": 0.14,
+    "consol_range_pct": 0.8,
+    "ch24": -0.35,
+    "ch7": 18.91,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -0.35,
+    "vol_ratio": 317.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AHYPEUSDT.P&interval=5",
+    "timestamp": "2026-05-31T12:19:32.240699+00:00",
+    "created_ts": 1780229972,
+    "status": "OPEN"
+  },
+  {
+    "id": "BNB_USDT_1780229974",
+    "symbol": "BNB_USDT",
+    "direction": "LONG",
+    "entry_price": 726.0,
+    "sl": 711.48,
+    "tp": 769.56,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      742.2285714286,
+      744.625
+    ],
+    "level_gap_pct": 0.32,
+    "dist_to_level_pct": 2.24,
+    "consol_range_pct": 0.53,
+    "ch24": 0.86,
+    "ch7": 12.07,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 0.86,
+    "vol_ratio": 78.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ABNBUSDT.P&interval=5",
+    "timestamp": "2026-05-31T12:19:34.413237+00:00",
+    "created_ts": 1780229974,
+    "status": "OPEN"
   }
 ]
