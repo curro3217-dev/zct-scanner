@@ -17,8 +17,8 @@
     "lvl2_name": "P4HL",
     "lvl2": 0.3449,
     "dist_pct": 0.318,
-    "status": "OPEN",
-    "resolved_at": null,
+    "status": "LOSS",
+    "resolved_at": "2026-05-31T10:20:36.218202+00:00",
     "resolved_price": null
   },
   {
@@ -39,8 +39,8 @@
     "lvl2_name": "P4HH",
     "lvl2": 0.3715,
     "dist_pct": 0.218,
-    "status": "OPEN",
-    "resolved_at": null,
+    "status": "LOSS",
+    "resolved_at": "2026-05-31T10:20:36.880743+00:00",
     "resolved_price": null
   }
 ]
