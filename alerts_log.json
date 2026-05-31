@@ -152,5 +152,32 @@
     "timestamp": "2026-05-31T16:37:14.069875+00:00",
     "created_ts": 1780245434,
     "status": "OPEN"
+  },
+  {
+    "id": "FET_USDT_1780253655",
+    "symbol": "FET_USDT",
+    "direction": "LONG",
+    "entry_price": 0.266,
+    "sl": 0.26068,
+    "tp": 0.28196,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      0.269725,
+      0.2703826087
+    ],
+    "level_gap_pct": 0.24,
+    "dist_to_level_pct": 1.4,
+    "consol_range_pct": 1.07,
+    "ch24": -4.59,
+    "ch7": 25.41,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -4.59,
+    "vol_ratio": 28.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AFETUSDT.P&interval=5",
+    "timestamp": "2026-05-31T18:54:15.948913+00:00",
+    "created_ts": 1780253655,
+    "status": "OPEN"
   }
 ]
