@@ -1,35 +1,27 @@
-name: ZCT Backtest
-
+name: TFZ Backtest
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 8 * * 1'
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   backtest:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: pip install requests
-
       - name: Run backtest
         env:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python zct_scanner/backtest.py
-
       - name: Analyze results
         if: always()
         run: |
@@ -41,25 +33,27 @@ jobs:
           rows = list(csv.DictReader(open(path)))
           total = len(rows)
           print(f"TOTAL SETUPS: {total}")
-          for strategy in ('BREAKOUT','MR'):
-              sub = [r for r in rows if r['strategy']==strategy]
-              if not sub: continue
-              wins = sum(1 for r in sub if r['outcome']=='WIN')
-              losses = sum(1 for r in sub if r['outcome']=='LOSS')
-              wr = wins/len(sub)*100
-              print(f"\n=== {strategy} === {len(sub)} setups | WR {wr:.1f}% ({wins}W/{losses}L)")
-              for key in ('direction','ma_dir','level'):
-                  counts = collections.Counter(r[key] for r in sub)
-                  win_by = collections.Counter(r[key] for r in sub if r['outcome']=='WIN')
+          if total:
+              wins     = sum(1 for r in rows if r['outcome'] == 'WIN')
+              losses   = sum(1 for r in rows if r['outcome'] == 'LOSS')
+              timeouts = sum(1 for r in rows if r['outcome'] == 'TIMEOUT')
+              resolved = wins + losses
+              wr = wins / resolved * 100 if resolved else 0
+              print(f"WR {wr:.1f}% ({wins}W/{losses}L) | timeouts {timeouts} | resueltas {resolved}")
+              for key in ('direction',):
+                  counts  = collections.Counter(r[key] for r in rows)
+                  win_by  = collections.Counter(r[key] for r in rows if r['outcome'] == 'WIN')
+                  res_by  = collections.Counter(r[key] for r in rows if r['outcome'] in ('WIN', 'LOSS'))
                   print(f"  by {key}:")
-                  for val,n in sorted(counts.items()):
-                      w = win_by.get(val,0)
-                      print(f"    {val:15s} {w}/{n} = {w/n*100:.0f}%")
+                  for val, n in sorted(counts.items()):
+                      w  = win_by.get(val, 0)
+                      rs = res_by.get(val, 0)
+                      pct = (w / rs * 100) if rs else 0
+                      print(f"    {val:8s} {w}/{rs} resueltas = {pct:.0f}%  ({n} setups)")
           print("\n=== FULL CSV ===")
           for r in rows:
-              print(','.join(r.values()))
+              print(','.join(str(v) for v in r.values()))
           EOF
-
       - name: Upload CSV de resultados
         if: always()
         uses: actions/upload-artifact@v4
