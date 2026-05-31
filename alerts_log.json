@@ -42,5 +42,32 @@
     "status": "LOSS",
     "resolved_at": "2026-05-31T10:20:36.880743+00:00",
     "resolved_price": null
+  },
+  {
+    "id": "INJ_USDT_1780225801",
+    "symbol": "INJ_USDT",
+    "direction": "LONG",
+    "entry_price": 6.541,
+    "sl": 6.41018,
+    "tp": 6.93346,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      6.5475,
+      6.5834814815
+    ],
+    "level_gap_pct": 0.55,
+    "dist_to_level_pct": 0.1,
+    "consol_range_pct": 1.29,
+    "ch24": -0.76,
+    "ch7": 23.76,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -0.76,
+    "vol_ratio": 31.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AINJUSDT.P&interval=5",
+    "timestamp": "2026-05-31T11:10:01.611937+00:00",
+    "created_ts": 1780225801,
+    "status": "OPEN"
   }
 ]
