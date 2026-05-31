@@ -21,9 +21,11 @@ Parametros de trading (fijos, no cambian respecto al sistema anterior):
 Las entradas se buscan en grafico de 5m; los niveles se detectan en 5m + 15m.
 El link de TradingView de la alerta apunta al grafico de 5m.
 
-Requiere variables de entorno (secrets de GitHub Actions, ya configurados):
-    TELEGRAM_TOKEN
-    TELEGRAM_CHAT_ID
+Variables de entorno: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (ya configurados).
+Opcionales para calibrar: DIAG, MIN_VOLUME_USD, MIN_MOVE_PCT, PIVOT_K,
+LEVEL_TOL_PCT, MIN_TOUCHES, MIN_LEVELS, GAP_TOP_COIN, GAP_ALTCOIN,
+MAX_DIST_TO_LEVEL, CONSOL_LOOKBACK, CONSOL_MAX_RANGE, CONSOL_TO_LEVEL,
+MAX_MEAN_WICK, MAX_GAP_PCT, MAX_GAPS_ALLOWED, COOLDOWN_MIN.
 """
 
 import os
@@ -36,13 +38,41 @@ from urllib import error as urlerror
 
 # --------------------------------------------------------------------------- #
 #  CONFIGURACION
+#  Todos los umbrales se pueden sobreescribir con variables de entorno
+#  (secrets o env vars del workflow) sin tocar el codigo. Ej: para aflojar,
+#  pon LEVEL_TOL_PCT=0.008 o MAX_DIST_TO_LEVEL=0.20 en el workflow.
 # --------------------------------------------------------------------------- #
+
+def _envf(name, default):
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return float(default)
+
+
+def _envi(name, default):
+    try:
+        return int(float(os.environ[name]))
+    except (KeyError, ValueError):
+        return int(default)
+
+
+def _envb(name, default=False):
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "si", "on")
+
 
 BASE = "https://contract.mexc.com/api/v1/contract"
 
+# ---- Diagnostico ---------------------------------------------------------- #
+# DIAG=1 imprime el embudo (cuantos candidatos mueren en cada filtro).
+DIAG             = _envb("DIAG", True)   # por defecto activo mientras calibramos
+
 # ---- Seleccion de monedas (se mantiene de lo anterior) -------------------- #
-MIN_VOLUME_USD   = 20_000_000   # volumen MEXC 24h minimo ($20M ~ $100M global)
-MIN_MOVE_PCT     = 10.0         # movimiento >= 10% en 24h O en 7d
+MIN_VOLUME_USD   = _envf("MIN_VOLUME_USD", 20_000_000)  # vol MEXC 24h ($20M~$100M global)
+MIN_MOVE_PCT     = _envf("MIN_MOVE_PCT", 10.0)          # movimiento >= 10% en 24h O 7d
 QUOTE            = "_USDT"      # solo perpetuos USDT
 
 # ---- Parametros de trading (fijos) ---------------------------------------- #
@@ -51,34 +81,50 @@ TP_PCT           = 0.06         # 6%  (ratio 1:3)
 LEVERAGE         = 10
 
 # ---- Deteccion de niveles de liquidez (TFZ) ------------------------------- #
-PIVOT_K          = 2            # ventana a cada lado para definir un swing/pivot
-LEVEL_TOL_PCT    = 0.006        # toques dentro de 0.6% = mismo nivel
-MIN_TOUCHES      = 2            # un nivel valido necesita >= 2 toques
-MIN_LEVELS       = 2            # se exigen al menos 2 niveles (Anexo 5)
+PIVOT_K          = _envi("PIVOT_K", 2)            # ventana a cada lado del swing/pivot
+LEVEL_TOL_PCT    = _envf("LEVEL_TOL_PCT", 0.006)  # toques dentro de 0.6% = mismo nivel
+MIN_TOUCHES      = _envi("MIN_TOUCHES", 2)        # un nivel valido necesita >= N toques
+MIN_LEVELS       = _envi("MIN_LEVELS", 2)         # se exigen al menos N niveles (Anexo 5)
 
 # Distancia maxima ENTRE los dos niveles objetivo (Anexo 10)
-GAP_TOP_COIN     = 0.020        # top coins: <= 2%
-GAP_ALTCOIN      = 0.030        # altcoins:  <= 3%
+GAP_TOP_COIN     = _envf("GAP_TOP_COIN", 0.020)   # top coins: <= 2%
+GAP_ALTCOIN      = _envf("GAP_ALTCOIN", 0.030)    # altcoins:  <= 3%
 TOP_COINS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX",
              "LINK", "TRX", "DOT", "MATIC", "LTC", "BCH", "TON"}
 
 # Distancia maxima del PRECIO al nivel mas cercano (Anexo 11)
-MAX_DIST_TO_LEVEL = 0.15        # 15% en movimiento limpio
+MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)  # 15% en movimiento limpio
 
 # ---- Consolidacion / base ------------------------------------------------- #
-CONSOL_LOOKBACK  = 10           # nº de velas 5m que forman la base
-CONSOL_MAX_RANGE = 0.030        # rango de la consolidacion <= 3%
-CONSOL_TO_LEVEL  = 0.030        # techo de la consolidacion a <= 3% del nivel
+CONSOL_LOOKBACK  = _envi("CONSOL_LOOKBACK", 10)       # nº de velas 5m que forman la base
+CONSOL_MAX_RANGE = _envf("CONSOL_MAX_RANGE", 0.030)   # rango de la consolidacion <= 3%
+CONSOL_TO_LEVEL  = _envf("CONSOL_TO_LEVEL", 0.030)    # techo de la base a <= 3% del nivel
 
 # ---- Filtro de graficos no-tradeables (Anexo 3) --------------------------- #
 WICK_LOOKBACK    = 30
-MAX_MEAN_WICK    = 0.70         # mecha media > 70% del rango -> sin estructura
-MAX_GAP_PCT      = 0.025        # gaps > 2.5% frecuentes -> baja liquidez
-MAX_GAPS_ALLOWED = 3
+MAX_MEAN_WICK    = _envf("MAX_MEAN_WICK", 0.70)   # mecha media > 70% del rango -> sin estructura
+MAX_GAP_PCT      = _envf("MAX_GAP_PCT", 0.025)    # gaps > 2.5% frecuentes -> baja liquidez
+MAX_GAPS_ALLOWED = _envi("MAX_GAPS_ALLOWED", 3)
 
 # ---- Anti-spam / dedup ---------------------------------------------------- #
 ALERTS_LOG       = "alerts_log.json"
-COOLDOWN_MIN     = 120          # no repetir mismo symbol+side en 120 min
+COOLDOWN_MIN     = _envi("COOLDOWN_MIN", 120)     # no repetir mismo symbol+side en N min
+
+# ---- Embudo de diagnostico (se rellena en cada corrida) ------------------- #
+FUNNEL = {
+    "evaluados": 0,
+    "datos_ok": 0,
+    "tradeable": 0,
+    "con_niveles": 0,
+    "2_niveles_direccion": 0,
+    "dist_ok": 0,
+    "gap_ok": 0,
+    "breakout_alerta": 0,
+}
+
+
+def _bump(key):
+    FUNNEL[key] = FUNNEL.get(key, 0) + 1
 
 # --------------------------------------------------------------------------- #
 #  HTTP
@@ -328,6 +374,7 @@ def evaluate(symbol, side, info):
     o None. Combina niveles de 5m + 15m, exige 2 niveles cercanos, valida
     distancia al precio, consolidacion y breakout en 5m.
     """
+    _bump("evaluados")
     price = info.get("last")
     if not price:
         return None
@@ -336,14 +383,17 @@ def evaluate(symbol, side, info):
     k1 = get_klines(symbol, "Min5", limit=200)    # 5m para base + trigger
     if len(k1) < CONSOL_LOOKBACK + 5 or len(k5) < 20:
         return None
+    _bump("datos_ok")
 
     if is_untradeable(k1):
         return None
+    _bump("tradeable")
 
     # Niveles combinados 5m + 15m
     levels = liquidity_levels(k1, side) + liquidity_levels(k5, side)
     if not levels:
         return None
+    _bump("con_niveles")
 
     # Niveles en la direccion correcta respecto al precio
     if side == "LONG":
@@ -353,6 +403,7 @@ def evaluate(symbol, side, info):
                         key=lambda x: x[0], reverse=True)
     if len(target) < MIN_LEVELS:
         return None
+    _bump("2_niveles_direccion")
 
     l1, l2 = target[0][0], target[1][0]   # dos niveles mas cercanos
     nearest = l1
@@ -361,17 +412,20 @@ def evaluate(symbol, side, info):
     dist = abs(nearest - price) / price
     if dist > MAX_DIST_TO_LEVEL:
         return None
+    _bump("dist_ok")
 
     # Distancia entre los dos niveles (Anexo 10)
     gap = abs(l2 - l1) / l1
     max_gap = GAP_TOP_COIN if base_asset(symbol) in TOP_COINS else GAP_ALTCOIN
     if gap > max_gap:
         return None
+    _bump("gap_ok")
 
     # Consolidacion + breakout en 5m
     consol = find_consolidation(k1, side, nearest)
     if not consol:
         return None
+    _bump("breakout_alerta")
 
     # --- Construccion de la alerta ----------------------------------------- #
     entry = float(price)
@@ -513,6 +567,20 @@ def main():
         time.sleep(0.3)  # cortesia con la API
 
     save_log(log)
+
+    if DIAG:
+        print("---- Embudo de diagnostico ----")
+        print(f"  candidatos............... {len(candidates)}")
+        print(f"  evaluados................ {FUNNEL['evaluados']}")
+        print(f"  con datos OHLC ok........ {FUNNEL['datos_ok']}")
+        print(f"  tradeables (no Anexo3)... {FUNNEL['tradeable']}")
+        print(f"  con >=1 nivel............ {FUNNEL['con_niveles']}")
+        print(f"  con 2 niveles direccion.. {FUNNEL['2_niveles_direccion']}")
+        print(f"  nivel a <{MAX_DIST_TO_LEVEL*100:g}% del precio. {FUNNEL['dist_ok']}")
+        print(f"  niveles cercanos (gap)... {FUNNEL['gap_ok']}")
+        print(f"  breakout -> ALERTA....... {FUNNEL['breakout_alerta']}")
+        print("-------------------------------")
+
     print(f"Alertas nuevas: {new_alerts}")
 
 
