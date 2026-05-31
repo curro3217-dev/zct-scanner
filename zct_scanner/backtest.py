@@ -22,6 +22,7 @@ estrategia es la misma; solo cambia el timeframe de las velas.
 
 Uso: python backtest.py
 Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (env vars)
+Opcional: MAX_COINS (cuantos perpetuos testear, por defecto 80).
 """
 
 import os
@@ -71,15 +72,15 @@ BREAKEVEN_WR     = 25.0         # con RR 1:3 necesitas > 25% de aciertos
 
 INTERVAL_MAP = {"15m": "Min15", "1h": "Min60", "4h": "Hour4", "1d": "Day1"}
 
-# Universo de monedas para el backtest (muestra; el scanner en vivo escanea
-# todos los perpetuos, aqui usamos una lista fija liquida y volatil).
-COINS = [
+BASE = "https://contract.mexc.com/api/v1/contract"
+
+# Cuantos perpetuos (por volumen) testear. Configurable con MAX_COINS.
+MAX_COINS = int(float(os.environ.get("MAX_COINS", 80)))
+
+# Lista de respaldo si la API de tickers falla (solo se usa como fallback).
+FALLBACK_COINS = [
     "BTC_USDT", "ETH_USDT", "BNB_USDT", "SOL_USDT", "XRP_USDT",
     "DOGE_USDT", "ADA_USDT", "AVAX_USDT", "LINK_USDT", "DOT_USDT",
-    "LTC_USDT", "UNI_USDT", "ATOM_USDT", "NEAR_USDT", "APT_USDT",
-    "ARB_USDT", "OP_USDT", "INJ_USDT", "SUI_USDT", "TRX_USDT",
-    "TON_USDT", "WIF_USDT", "JUP_USDT", "SEI_USDT", "PEPE_USDT",
-    "BONK_USDT", "TIA_USDT", "PENDLE_USDT", "FTM_USDT", "MATIC_USDT",
 ]
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
@@ -92,7 +93,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 def get_klines(symbol, interval, limit=1500):
     try:
         r = requests.get(
-            f"https://contract.mexc.com/api/v1/contract/kline/{symbol}",
+            f"{BASE}/kline/{symbol}",
             params={"interval": INTERVAL_MAP[interval], "limit": limit},
             timeout=15,
         )
@@ -104,6 +105,32 @@ def get_klines(symbol, interval, limit=1500):
     except Exception as e:  # noqa: BLE001
         log.error(f"{symbol} {interval}: {e}")
         return None
+
+
+def build_universe():
+    """
+    Universo dinamico: perpetuos USDT con volumen 24h >= $20M, ordenados por
+    volumen, limitado a MAX_COINS. Asi el backtest corre sobre las mismas
+    monedas liquidas que el scanner considera en vivo (no una lista fija de
+    mayores que casi nunca se mueven >=10%). Cae a FALLBACK_COINS si falla.
+    """
+    try:
+        r = requests.get(f"{BASE}/ticker", timeout=15)
+        data = r.json().get("data", [])
+        cands = []
+        for tk in data:
+            sym = tk.get("symbol", "")
+            if sym.endswith("_USDT") and (tk.get("amount24") or 0) >= MIN_VOLUME_USD:
+                cands.append((sym, tk.get("amount24") or 0))
+        cands.sort(key=lambda x: x[1], reverse=True)
+        coins = [s for s, _ in cands[:MAX_COINS]]
+        if coins:
+            log.info(f"Universo dinamico: {len(coins)} perpetuos USDT (vol >= $20M)")
+            return coins
+    except Exception as e:  # noqa: BLE001
+        log.error(f"build_universe fallo: {e}")
+    log.warning("Usando lista de respaldo (FALLBACK_COINS)")
+    return FALLBACK_COINS
 
 
 # ══════════════════════════════════════════════════════════
@@ -473,10 +500,11 @@ def main():
     log.info(f"SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=1:3  "
              f"move>={MIN_MOVE_PCT}%  vol>=${MIN_VOLUME_USD/1e6:.0f}M")
 
+    coins = build_universe()
     all_results = []
-    for i, symbol in enumerate(COINS):
+    for i, symbol in enumerate(coins):
         try:
-            log.info(f"[{i+1}/{len(COINS)}] {symbol}")
+            log.info(f"[{i+1}/{len(coins)}] {symbol}")
             all_results.extend(backtest_coin(symbol))
         except Exception as e:  # noqa: BLE001
             log.error(f"{symbol}: {e}")
@@ -495,7 +523,7 @@ def main():
         log.info(f"CSV guardado: {csv_path}")
 
     analysis = analyze(all_results)
-    report = build_report(analysis, len(COINS))
+    report = build_report(analysis, len(coins))
     log.info("Enviando reporte...")
     send_telegram(report)
     log.info("=== Backtest completado ===")
