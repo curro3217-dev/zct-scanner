@@ -25,7 +25,8 @@ Variables de entorno: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (ya configurados).
 Opcionales para calibrar: DIAG, MIN_VOLUME_USD, MIN_MOVE_PCT, PIVOT_K,
 LEVEL_TOL_PCT, MIN_TOUCHES, MIN_LEVELS, GAP_TOP_COIN, GAP_ALTCOIN,
 MAX_DIST_TO_LEVEL, CONSOL_LOOKBACK, CONSOL_MAX_RANGE, CONSOL_TO_LEVEL,
-MAX_MEAN_WICK, MAX_GAP_PCT, MAX_GAPS_ALLOWED, COOLDOWN_MIN.
+BREAKOUT_BARS, MAX_EXTENSION, MAX_MEAN_WICK, MAX_GAP_PCT, MAX_GAPS_ALLOWED,
+COOLDOWN_MIN.
 """
 
 import os
@@ -99,6 +100,8 @@ MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)  # 15% en movimiento limpio
 CONSOL_LOOKBACK  = _envi("CONSOL_LOOKBACK", 10)       # nº de velas 5m que forman la base
 CONSOL_MAX_RANGE = _envf("CONSOL_MAX_RANGE", 0.030)   # rango de la consolidacion <= 3%
 CONSOL_TO_LEVEL  = _envf("CONSOL_TO_LEVEL", 0.030)    # techo de la base a <= 3% del nivel
+BREAKOUT_BARS    = _envi("BREAKOUT_BARS", 2)          # busca la ruptura en las ultimas N velas
+MAX_EXTENSION    = _envf("MAX_EXTENSION", 0.015)      # no alertar si el precio ya se fue >1.5% del breakout
 
 # ---- Filtro de graficos no-tradeables (Anexo 3) --------------------------- #
 WICK_LOOKBACK    = 30
@@ -320,48 +323,69 @@ def is_untradeable(candles):
 
 def find_consolidation(candles, side, nearest_level):
     """
-    Busca una consolidacion (base) en las ultimas CONSOL_LOOKBACK velas,
-    pegada al nivel mas cercano, y comprueba el BREAKOUT en la ultima vela.
+    Busca una consolidacion (base) pegada al nivel y un BREAKOUT.
+
+    Robustez de timing: prueba la ruptura en las ultimas BREAKOUT_BARS velas
+    (no solo la ultima), por si el cron se ejecuta una vela tarde. Para cada
+    posicion de trigger candidata, la base son las CONSOL_LOOKBACK velas
+    inmediatamente anteriores. Incluye un guardia anti-entrada-tardia
+    (MAX_EXTENSION): si el precio actual ya se fue demasiado lejos del
+    breakout, no alerta.
 
     Devuelve dict con la info de la base si hay breakout valido, o None.
+    Se prueba de la vela mas reciente hacia atras (preferimos la mas fresca).
     """
     if len(candles) < CONSOL_LOOKBACK + 1:
         return None
 
-    # La base son las velas previas a la ultima (la ultima es el trigger)
-    base = candles[-(CONSOL_LOOKBACK + 1):-1]
-    trigger = candles[-1]
+    last_close = candles[-1]["c"]
 
-    highs = [c["h"] for c in base]
-    lows  = [c["l"] for c in base]
-    hi, lo = max(highs), min(lows)
-    if lo <= 0:
-        return None
-    rng_pct = (hi - lo) / lo
-    if rng_pct > CONSOL_MAX_RANGE:
-        return None  # demasiado ancha: no es consolidacion
+    for back in range(0, max(1, BREAKOUT_BARS)):
+        ti = len(candles) - 1 - back          # indice del trigger candidato
+        if ti - CONSOL_LOOKBACK < 0:
+            continue
+        base = candles[ti - CONSOL_LOOKBACK:ti]
+        trigger = candles[ti]
 
-    if side == "LONG":
-        # la base debe estar justo por debajo del nivel
-        if (nearest_level - hi) / nearest_level > CONSOL_TO_LEVEL:
-            return None
-        # breakout: cierre por encima del techo del rango
-        if not (trigger["c"] > hi):
-            return None
-    else:  # SHORT
-        if (lo - nearest_level) / nearest_level > CONSOL_TO_LEVEL:
-            return None
-        if not (trigger["c"] < lo):
-            return None
+        highs = [c["h"] for c in base]
+        lows  = [c["l"] for c in base]
+        hi, lo = max(highs), min(lows)
+        if lo <= 0:
+            continue
+        rng_pct = (hi - lo) / lo
+        if rng_pct > CONSOL_MAX_RANGE:
+            continue  # demasiado ancha: no es consolidacion
 
-    # el trigger no debe ser una mecha gigante (cuerpo real)
-    trng = trigger["h"] - trigger["l"]
-    tbody = abs(trigger["c"] - trigger["o"])
-    if trng > 0 and tbody / trng < 0.4:
-        return None
+        # el trigger no debe ser una mecha gigante (cuerpo real)
+        trng = trigger["h"] - trigger["l"]
+        tbody = abs(trigger["c"] - trigger["o"])
+        if trng > 0 and tbody / trng < 0.4:
+            continue
 
-    return {"consol_high": hi, "consol_low": lo, "range_pct": round(rng_pct * 100, 2),
-            "trigger_close": trigger["c"]}
+        if side == "LONG":
+            # la base debe estar justo por debajo del nivel
+            if (nearest_level - hi) / nearest_level > CONSOL_TO_LEVEL:
+                continue
+            # breakout: cierre por encima del techo del rango
+            if not (trigger["c"] > hi):
+                continue
+            # anti-entrada-tardia: el precio actual no debe haberse ido lejos
+            if (last_close - hi) / hi > MAX_EXTENSION:
+                continue
+        else:  # SHORT
+            if (lo - nearest_level) / nearest_level > CONSOL_TO_LEVEL:
+                continue
+            if not (trigger["c"] < lo):
+                continue
+            if (lo - last_close) / lo > MAX_EXTENSION:
+                continue
+
+        return {"consol_high": hi, "consol_low": lo,
+                "range_pct": round(rng_pct * 100, 2),
+                "trigger_close": trigger["c"],
+                "trigger_back": back}
+
+    return None
 
 
 # --------------------------------------------------------------------------- #
