@@ -123,5 +123,32 @@
     "timestamp": "2026-05-31T12:19:34.413237+00:00",
     "created_ts": 1780229974,
     "status": "OPEN"
+  },
+  {
+    "id": "ZEC_USDT_1780245434",
+    "symbol": "ZEC_USDT",
+    "direction": "SHORT",
+    "entry_price": 542.91,
+    "sl": 553.7682,
+    "tp": 510.3354,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      542.5516666667,
+      533.095
+    ],
+    "level_gap_pct": 1.74,
+    "dist_to_level_pct": 0.07,
+    "consol_range_pct": 2.34,
+    "ch24": 2.8,
+    "ch7": -17.75,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 2.8,
+    "vol_ratio": 433.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AZECUSDT.P&interval=5",
+    "timestamp": "2026-05-31T16:37:14.069875+00:00",
+    "created_ts": 1780245434,
+    "status": "OPEN"
   }
 ]
