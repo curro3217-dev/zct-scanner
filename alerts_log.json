@@ -9,7 +9,10 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [6.5475, 6.5834814815],
+    "levels": [
+      6.5475,
+      6.5834814815
+    ],
     "level_gap_pct": 0.55,
     "dist_to_level_pct": 0.1,
     "consol_range_pct": 1.29,
@@ -34,7 +37,10 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [68.107, 68.9594482759],
+    "levels": [
+      68.107,
+      68.9594482759
+    ],
     "level_gap_pct": 1.25,
     "dist_to_level_pct": 0.14,
     "consol_range_pct": 0.8,
@@ -59,7 +65,10 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [742.2285714286, 744.625],
+    "levels": [
+      742.2285714286,
+      744.625
+    ],
     "level_gap_pct": 0.32,
     "dist_to_level_pct": 2.24,
     "consol_range_pct": 0.53,
@@ -84,7 +93,10 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [542.5516666667, 533.095],
+    "levels": [
+      542.5516666667,
+      533.095
+    ],
     "level_gap_pct": 1.74,
     "dist_to_level_pct": 0.07,
     "consol_range_pct": 2.34,
@@ -109,7 +121,10 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [0.269725, 0.2703826087],
+    "levels": [
+      0.269725,
+      0.2703826087
+    ],
     "level_gap_pct": 0.24,
     "dist_to_level_pct": 1.4,
     "consol_range_pct": 1.07,
@@ -134,7 +149,10 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [0.3398, 0.3409888889],
+    "levels": [
+      0.3398,
+      0.3409888889
+    ],
     "level_gap_pct": 0.35,
     "dist_to_level_pct": 0.8,
     "consol_range_pct": 1.23,
@@ -159,7 +177,10 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [0.2774, 0.2776333333],
+    "levels": [
+      0.2774,
+      0.2776333333
+    ],
     "level_gap_pct": 0.08,
     "dist_to_level_pct": 0.04,
     "consol_range_pct": 1.99,
@@ -184,7 +205,10 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [6.6213846154, 6.6966666667],
+    "levels": [
+      6.6213846154,
+      6.6966666667
+    ],
     "level_gap_pct": 1.14,
     "dist_to_level_pct": 0.31,
     "consol_range_pct": 1.87,
@@ -209,7 +233,10 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [0.2615063636, 0.262035],
+    "levels": [
+      0.2615063636,
+      0.262035
+    ],
     "level_gap_pct": 0.2,
     "dist_to_level_pct": 0.7,
     "consol_range_pct": 2.92,
