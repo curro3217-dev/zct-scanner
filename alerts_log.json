@@ -260,5 +260,32 @@
     "timestamp": "2026-06-01T05:18:49.799134+00:00",
     "created_ts": 1780291129,
     "status": "OPEN"
+  },
+  {
+    "id": "XLM_USDT_1780310013",
+    "symbol": "XLM_USDT",
+    "direction": "LONG",
+    "entry_price": 0.25969,
+    "sl": 0.2544962,
+    "tp": 0.2752714,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      0.2615063636,
+      0.262035
+    ],
+    "level_gap_pct": 0.2,
+    "dist_to_level_pct": 0.7,
+    "consol_range_pct": 2.92,
+    "ch24": 0.06,
+    "ch7": 77.09,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 0.06,
+    "vol_ratio": 204.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AXLMUSDT.P&interval=5",
+    "timestamp": "2026-06-01T10:33:33.389184+00:00",
+    "created_ts": 1780310013,
+    "status": "OPEN"
   }
 ]
