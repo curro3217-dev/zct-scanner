@@ -96,7 +96,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AHYPEUSDT.P&interval=5",
     "timestamp": "2026-05-31T12:19:32.240699+00:00",
     "created_ts": 1780229972,
-    "status": "OPEN"
+    "status": "WIN",
+    "resolved_at": "2026-06-01T11:59:40.036563+00:00"
   },
   {
     "id": "BNB_USDT_1780229974",
@@ -151,7 +152,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AZECUSDT.P&interval=5",
     "timestamp": "2026-05-31T16:37:14.069875+00:00",
     "created_ts": 1780245434,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-01T11:59:40.719842+00:00"
   },
   {
     "id": "FET_USDT_1780253655",
@@ -178,7 +180,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AFETUSDT.P&interval=5",
     "timestamp": "2026-05-31T18:54:15.948913+00:00",
     "created_ts": 1780253655,
-    "status": "OPEN"
+    "status": "WIN",
+    "resolved_at": "2026-06-01T11:59:41.327681+00:00"
   },
   {
     "id": "WLD_USDT_1780257577",
@@ -205,7 +208,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AWLDUSDT.P&interval=5",
     "timestamp": "2026-05-31T19:59:37.722758+00:00",
     "created_ts": 1780257577,
-    "status": "OPEN"
+    "status": "WIN",
+    "resolved_at": "2026-06-01T11:59:41.930997+00:00"
   },
   {
     "id": "FET_USDT_1780291128",
@@ -232,7 +236,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AFETUSDT.P&interval=5",
     "timestamp": "2026-06-01T05:18:48.746497+00:00",
     "created_ts": 1780291128,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-01T11:59:42.837056+00:00"
   },
   {
     "id": "INJ_USDT_1780291129",
@@ -259,7 +264,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AINJUSDT.P&interval=5",
     "timestamp": "2026-06-01T05:18:49.799134+00:00",
     "created_ts": 1780291129,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-01T11:59:43.437501+00:00"
   },
   {
     "id": "XLM_USDT_1780310013",
