@@ -15,8 +15,8 @@ logica de la estrategia "Trading From Zero":
     - La ENTRADA es el BREAKOUT con cierre fuera del rango.
     - Descartamos graficos no-tradeables (mechas enormes, gaps, sin estructura).
 
-Parametros de trading (fijos, no cambian respecto al sistema anterior):
-    SL 2% | TP 6% | Ratio 1:3 | Apalancamiento x10 | Margen 10% del capital/trade
+Parametros de trading (fijos):
+    SL 2% | TP 6% | Ratio 1:3 | Apalancamiento x10
 
 Las entradas se buscan en grafico de 5m; los niveles se detectan en 5m + 15m.
 El link de TradingView de la alerta apunta al grafico de 5m.
@@ -546,6 +546,7 @@ def send_telegram(text):
 def format_alert(a):
     arrow = "🟢 LONG" if a["direction"] == "LONG" else "🔴 SHORT"
     levels = " / ".join(f"{x:g}" for x in a["levels"])
+    tp1 = a["levels"][0]                       # primer nivel = cierre de la 1a mitad
     return (
         f"<b>{arrow}  {a['symbol']}</b>  (TFZ breakout)\n"
         f"Entrada: <b>{a['entry_price']:g}</b>\n"
@@ -553,6 +554,11 @@ def format_alert(a):
         f"Niveles objetivo: {levels}  (gap {a['level_gap_pct']}%)\n"
         f"Dist. al nivel: {a['dist_to_level_pct']}%   Base: {a['consol_range_pct']}%\n"
         f"Cambio 24h: {a['ch24']}%   7d: {a['ch7']}%\n"
+        f"\n— — Plan Omni (copiar) — —\n"
+        f"Entrada: {a['entry_price']:g}\n"
+        f"SL (-2%): {a['sl']:g}\n"
+        f"TP1 (50%) nivel: {tp1:g}\n"
+        f"TP2 (50%) +6%: {a['tp']:g}\n"
         f"<a href=\"{a['tv_link']}\">📈 Grafico 5m (TradingView)</a>"
     )
 
