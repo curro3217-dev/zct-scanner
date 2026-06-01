@@ -1,49 +1,5 @@
 [
   {
-    "id": "ONDO_USDT_SHORT_20260530_105637",
-    "symbol": "ONDO_USDT",
-    "direction": "SHORT",
-    "timestamp": "2026-05-30T10:56:37.714165+00:00",
-    "entry_price": 0.3468,
-    "sl": 0.350268,
-    "tp": 0.336396,
-    "change_pct": -2.23,
-    "change_7d": -18.66,
-    "vol_ratio": 113.3,
-    "crosses": 0,
-    "ma_direction": "down",
-    "lvl1_name": "P15mL",
-    "lvl1": 0.3457,
-    "lvl2_name": "P4HL",
-    "lvl2": 0.3449,
-    "dist_pct": 0.318,
-    "status": "LOSS",
-    "resolved_at": "2026-05-31T10:20:36.218202+00:00",
-    "resolved_price": null
-  },
-  {
-    "id": "WLD_USDT_LONG_20260530_214112",
-    "symbol": "WLD_USDT",
-    "direction": "LONG",
-    "timestamp": "2026-05-30T21:41:12.295723+00:00",
-    "entry_price": 0.3668,
-    "sl": 0.359464,
-    "tp": 0.388808,
-    "change_pct": 26.62,
-    "change_7d": 22.44,
-    "vol_ratio": 112.0,
-    "crosses": 0,
-    "ma_direction": "up",
-    "lvl1_name": "P15mH",
-    "lvl1": 0.3676,
-    "lvl2_name": "P4HH",
-    "lvl2": 0.3715,
-    "dist_pct": 0.218,
-    "status": "LOSS",
-    "resolved_at": "2026-05-31T10:20:36.880743+00:00",
-    "resolved_price": null
-  },
-  {
     "id": "INJ_USDT_1780225801",
     "symbol": "INJ_USDT",
     "direction": "LONG",
@@ -53,10 +9,7 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [
-      6.5475,
-      6.5834814815
-    ],
+    "levels": [6.5475, 6.5834814815],
     "level_gap_pct": 0.55,
     "dist_to_level_pct": 0.1,
     "consol_range_pct": 1.29,
@@ -81,10 +34,7 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [
-      68.107,
-      68.9594482759
-    ],
+    "levels": [68.107, 68.9594482759],
     "level_gap_pct": 1.25,
     "dist_to_level_pct": 0.14,
     "consol_range_pct": 0.8,
@@ -109,10 +59,7 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [
-      742.2285714286,
-      744.625
-    ],
+    "levels": [742.2285714286, 744.625],
     "level_gap_pct": 0.32,
     "dist_to_level_pct": 2.24,
     "consol_range_pct": 0.53,
@@ -137,10 +84,7 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [
-      542.5516666667,
-      533.095
-    ],
+    "levels": [542.5516666667, 533.095],
     "level_gap_pct": 1.74,
     "dist_to_level_pct": 0.07,
     "consol_range_pct": 2.34,
@@ -165,10 +109,7 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [
-      0.269725,
-      0.2703826087
-    ],
+    "levels": [0.269725, 0.2703826087],
     "level_gap_pct": 0.24,
     "dist_to_level_pct": 1.4,
     "consol_range_pct": 1.07,
@@ -193,10 +134,7 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [
-      0.3398,
-      0.3409888889
-    ],
+    "levels": [0.3398, 0.3409888889],
     "level_gap_pct": 0.35,
     "dist_to_level_pct": 0.8,
     "consol_range_pct": 1.23,
@@ -221,10 +159,7 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [
-      0.2774,
-      0.2776333333
-    ],
+    "levels": [0.2774, 0.2776333333],
     "level_gap_pct": 0.08,
     "dist_to_level_pct": 0.04,
     "consol_range_pct": 1.99,
@@ -249,10 +184,7 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [
-      6.6213846154,
-      6.6966666667
-    ],
+    "levels": [6.6213846154, 6.6966666667],
     "level_gap_pct": 1.14,
     "dist_to_level_pct": 0.31,
     "consol_range_pct": 1.87,
@@ -277,10 +209,7 @@
     "leverage": 10,
     "timeframe": "5m",
     "setup": "TFZ_breakout",
-    "levels": [
-      0.2615063636,
-      0.262035
-    ],
+    "levels": [0.2615063636, 0.262035],
     "level_gap_pct": 0.2,
     "dist_to_level_pct": 0.7,
     "consol_range_pct": 2.92,
