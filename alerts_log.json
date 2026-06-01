@@ -206,5 +206,59 @@
     "timestamp": "2026-05-31T19:59:37.722758+00:00",
     "created_ts": 1780257577,
     "status": "OPEN"
+  },
+  {
+    "id": "FET_USDT_1780291128",
+    "symbol": "FET_USDT",
+    "direction": "LONG",
+    "entry_price": 0.2773,
+    "sl": 0.271754,
+    "tp": 0.293938,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      0.2774,
+      0.2776333333
+    ],
+    "level_gap_pct": 0.08,
+    "dist_to_level_pct": 0.04,
+    "consol_range_pct": 1.99,
+    "ch24": 3.24,
+    "ch7": 30.74,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 3.24,
+    "vol_ratio": 34.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AFETUSDT.P&interval=5",
+    "timestamp": "2026-06-01T05:18:48.746497+00:00",
+    "created_ts": 1780291128,
+    "status": "OPEN"
+  },
+  {
+    "id": "INJ_USDT_1780291129",
+    "symbol": "INJ_USDT",
+    "direction": "LONG",
+    "entry_price": 6.601,
+    "sl": 6.46898,
+    "tp": 6.99706,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      6.6213846154,
+      6.6966666667
+    ],
+    "level_gap_pct": 1.14,
+    "dist_to_level_pct": 0.31,
+    "consol_range_pct": 1.87,
+    "ch24": 1.18,
+    "ch7": 28.29,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 1.18,
+    "vol_ratio": 27.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AINJUSDT.P&interval=5",
+    "timestamp": "2026-06-01T05:18:49.799134+00:00",
+    "created_ts": 1780291129,
+    "status": "OPEN"
   }
 ]
