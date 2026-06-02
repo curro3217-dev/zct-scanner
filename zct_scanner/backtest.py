@@ -5,8 +5,11 @@ TFZ Backtester — Trading From Zero
 ==================================
 Replica la logica del scanner (main.py) sobre historico de 15m.
 Seleccion intraday: movimiento >= 10% en 24h (el 7d ya no filtra).
-Mide cada setup contra DOS salidas: +6% fijo y el PRIMER NIVEL (salida TFZ),
-y reporta WR + expectancia (% medio por trade) de ambas.
+
+Mide CADA setup contra TRES salidas y reporta WR + expectancia de cada una:
+  1) SL 2% fijo + TP +6%              (lo actual)
+  2) SL 2% fijo + TP en el 1er nivel
+  3) SL debajo de la consolidacion + TP en el 1er nivel   (TFZ puro)
 
 Uso: python backtest.py
 Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID. Opcional: COINGECKO_API_KEY.
@@ -97,8 +100,7 @@ def build_universe():
     """
     Universo = monedas con VOLUMEN GLOBAL (CoinGecko) >= MIN_VOLUME_GLOBAL,
     como perpetuo USDT en MEXC. Mismo criterio que el scanner. CoinGecko da el
-    volumen de HOY (monedas liquidas ahora, recorriendo su historia de precio).
-    Cae a FALLBACK_COINS si CoinGecko falla.
+    volumen de HOY. Cae a FALLBACK_COINS si CoinGecko falla.
     """
     try:
         key = f"&x_cg_demo_api_key={COINGECKO_API_KEY}" if COINGECKO_API_KEY else ""
@@ -313,21 +315,25 @@ def backtest_coin(symbol):
         if not consol:
             continue
 
-        # --- resultado: dos salidas -------------------------------------- #
+        # --- resultado: TRES salidas ------------------------------------- #
         fh = highs[idx + 1: idx + 1 + OUTCOME_CANDLES]
         fl = lows[idx + 1: idx + 1 + OUTCOME_CANDLES]
         if len(fh) < 4:
             continue
         if side == "LONG":
-            sl_price = price * (1 - SL_PCT)
-            tp2 = price * (1 + TP_PCT)
+            sl_fix = price * (1 - SL_PCT)         # SL fijo 2%
+            tp2 = price * (1 + TP_PCT)            # +6%
+            sl_tfz = consol["consol_low"]         # SL TFZ: debajo de la consolidacion
         else:
-            sl_price = price * (1 + SL_PCT)
+            sl_fix = price * (1 + SL_PCT)
             tp2 = price * (1 - TP_PCT)
-        tp1 = nearest
+            sl_tfz = consol["consol_high"]
+        tp1 = nearest                             # primer nivel (TP TFZ real)
+        sl_dist = abs(price - sl_tfz) / price * 100.0
 
-        outcome = simulate(side, price, tp2, sl_price, fh, fl)        # vs +6%
-        outcome_tp1 = simulate(side, price, tp1, sl_price, fh, fl)    # vs 1er nivel
+        outcome = simulate(side, price, tp2, sl_fix, fh, fl)         # SL2% + TP+6%
+        outcome_tp1 = simulate(side, price, tp1, sl_fix, fh, fl)     # SL2% + TP nivel
+        outcome_tfz = simulate(side, price, tp1, sl_tfz, fh, fl)     # SLconsol + TP nivel
         last_signal[side] = idx
 
         ts = (datetime.utcfromtimestamp(d15["time"][idx]).strftime("%m-%d %H:%M")
@@ -337,11 +343,13 @@ def backtest_coin(symbol):
             "ts": ts,
             "direction": side,
             "dist_pct": round(dist * 100, 2),   # ganancia si TP1 WIN
+            "sl_dist_pct": round(sl_dist, 2),   # perdida si TFZ LOSS
             "gap_pct": round(gap * 100, 2),
             "change_pct": round(ch24, 1),
             "consol_range_pct": consol["range_pct"],
-            "outcome": outcome,                 # contra +6%
-            "outcome_tp1": outcome_tp1,         # contra el primer nivel
+            "outcome": outcome,
+            "outcome_tp1": outcome_tp1,
+            "outcome_tfz": outcome_tfz,
         })
 
     log.info(f"{symbol}: {len(results)} setups")
@@ -359,8 +367,9 @@ def _wr(sub, key="outcome"):
     return (w, len(resolved), w / len(resolved) * 100)
 
 
-def _expectancy(rows, key, win_gain_pct):
-    """% medio por trade. WIN=+ganancia, LOSS=-SL%, TIMEOUT=0. Sobre TODOS."""
+def _expectancy(rows, key, win_gain_pct, loss_pct=None):
+    """% medio por trade. WIN=+ganancia, LOSS=-perdida, TIMEOUT=0. Sobre TODOS.
+    win_gain_pct / loss_pct: numero o funcion(r). loss_pct None -> SL fijo."""
     if not rows:
         return 0.0
     tot = 0.0
@@ -369,7 +378,10 @@ def _expectancy(rows, key, win_gain_pct):
         if o == "WIN":
             tot += win_gain_pct(r) if callable(win_gain_pct) else win_gain_pct
         elif o == "LOSS":
-            tot += -SL_PCT * 100
+            if loss_pct is None:
+                tot += -SL_PCT * 100
+            else:
+                tot += -(loss_pct(r) if callable(loss_pct) else loss_pct)
     return tot / len(rows)
 
 
@@ -381,15 +393,20 @@ def analyze(rows):
     resolved = wins + losses
     wr = wins / resolved * 100 if resolved else 0.0
 
+    # --- Comparacion de 3 salidas ------------------------------------------ #
     wr_tp2_all = _wr(rows, "outcome")
     wr_tp1_all = _wr(rows, "outcome_tp1")
-    exp_tp2 = _expectancy(rows, "outcome", TP_PCT * 100)
-    exp_tp1 = _expectancy(rows, "outcome_tp1", lambda r: r["dist_pct"])
-    by_dir_tp1 = {}
+    wr_tfz_all = _wr(rows, "outcome_tfz")
+    exp_tp2 = _expectancy(rows, "outcome", TP_PCT * 100)                       # +6% / -2%
+    exp_tp1 = _expectancy(rows, "outcome_tp1", lambda r: r["dist_pct"])        # +dist / -2%
+    exp_tfz = _expectancy(rows, "outcome_tfz",
+                          lambda r: r["dist_pct"], lambda r: r["sl_dist_pct"])  # +dist / -SLconsol
+    by_dir_tp1, by_dir_tfz = {}, {}
     for d in ("LONG", "SHORT"):
         sub = [r for r in rows if r["direction"] == d]
         if sub:
             by_dir_tp1[d] = _wr(sub, "outcome_tp1")
+            by_dir_tfz[d] = _wr(sub, "outcome_tfz")
 
     by_dir = {}
     for d in ("LONG", "SHORT"):
@@ -413,8 +430,9 @@ def analyze(rows):
         "total": total, "wins": wins, "losses": losses, "timeouts": timeouts,
         "resolved": resolved, "wr": wr,
         "by_dir": by_dir, "by_gap": by_gap, "by_dist": by_dist,
-        "wr_tp2_all": wr_tp2_all, "wr_tp1_all": wr_tp1_all,
-        "exp_tp2": exp_tp2, "exp_tp1": exp_tp1, "by_dir_tp1": by_dir_tp1,
+        "wr_tp2_all": wr_tp2_all, "wr_tp1_all": wr_tp1_all, "wr_tfz_all": wr_tfz_all,
+        "exp_tp2": exp_tp2, "exp_tp1": exp_tp1, "exp_tfz": exp_tfz,
+        "by_dir_tp1": by_dir_tp1, "by_dir_tfz": by_dir_tfz,
     }
 
 
@@ -448,14 +466,17 @@ def build_report(a, n_coins):
 
         w2, n2, p2 = a["wr_tp2_all"]
         w1, n1, p1 = a["wr_tp1_all"]
+        wz, nz, pz = a["wr_tfz_all"]
         comparacion = "\n".join([
-            "=== Comparacion de salida (lo importante) ===",
-            (f"Salir en +6% (actual): WR {p2:.0f}% ({w2}/{n2})  ·  "
-             f"expectancia {a['exp_tp2']:+.2f}%/trade"),
-            (f"Salir en el 1er NIVEL (TFZ): WR {p1:.0f}% ({w1}/{n1})  ·  "
-             f"expectancia {a['exp_tp1']:+.2f}%/trade"),
-            ("Expectancia = % medio por trade (con SL 2%). Si es positiva, "
-             "esa salida gana dinero a largo plazo."),
+            "=== Comparacion de 3 salidas (lo importante) ===",
+            (f"1) SL 2% + TP +6% (actual): WR {p2:.0f}% ({w2}/{n2})  ·  "
+             f"exp {a['exp_tp2']:+.2f}%/trade"),
+            (f"2) SL 2% + TP 1er nivel: WR {p1:.0f}% ({w1}/{n1})  ·  "
+             f"exp {a['exp_tp1']:+.2f}%/trade"),
+            (f"3) SL bajo consolidacion + TP 1er nivel (TFZ puro): WR {pz:.0f}% "
+             f"({wz}/{nz})  ·  exp {a['exp_tfz']:+.2f}%/trade"),
+            ("Expectancia = % medio por trade. La (3) es la salida real de TFZ; "
+             "si su expectancia es positiva, el sistema gana."),
         ])
 
         body = "\n".join(x for x in [
@@ -466,8 +487,8 @@ def build_report(a, n_coins):
             "",
             comparacion,
             "",
-            _fmt_section("Por direccion (salida +6%):", a["by_dir"]),
             _fmt_section("Por direccion (salida 1er nivel):", a["by_dir_tp1"]),
+            _fmt_section("Por direccion (salida TFZ pura):", a["by_dir_tfz"]),
             "",
             _fmt_section("Por cercania entre niveles (gap):", a["by_gap"]),
             "",
@@ -527,8 +548,8 @@ def main():
     if all_results:
         csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "backtest_results.csv")
-        fields = ["symbol", "ts", "direction", "dist_pct", "gap_pct",
-                  "change_pct", "consol_range_pct", "outcome", "outcome_tp1"]
+        fields = ["symbol", "ts", "direction", "dist_pct", "sl_dist_pct", "gap_pct",
+                  "change_pct", "consol_range_pct", "outcome", "outcome_tp1", "outcome_tfz"]
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             writer.writeheader()
