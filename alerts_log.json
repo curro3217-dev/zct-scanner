@@ -276,5 +276,59 @@
     "timestamp": "2026-06-02T04:53:35.162261+00:00",
     "created_ts": 1780376015,
     "status": "OPEN"
+  },
+  {
+    "id": "TAO_USDT_1780376737",
+    "symbol": "TAO_USDT",
+    "direction": "SHORT",
+    "entry_price": 250.49,
+    "sl": 255.4998,
+    "tp": 235.4606,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      250.335,
+      247.318
+    ],
+    "level_gap_pct": 1.21,
+    "dist_to_level_pct": 0.06,
+    "consol_range_pct": 1.37,
+    "ch24": -0.65,
+    "ch7": -11.91,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -0.65,
+    "vol_ratio": 200.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ATAOUSDT.P&interval=5",
+    "timestamp": "2026-06-02T05:05:37.437017+00:00",
+    "created_ts": 1780376737,
+    "status": "OPEN"
+  },
+  {
+    "id": "BCH_USDT_1780376739",
+    "symbol": "BCH_USDT",
+    "direction": "SHORT",
+    "entry_price": 287.99,
+    "sl": 293.7498,
+    "tp": 270.7106,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      282.72,
+      282.7033333333
+    ],
+    "level_gap_pct": 0.01,
+    "dist_to_level_pct": 1.83,
+    "consol_range_pct": 0.63,
+    "ch24": -3.58,
+    "ch7": -16.6,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -3.58,
+    "vol_ratio": 184.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ABCHUSDT.P&interval=5",
+    "timestamp": "2026-06-02T05:05:39.378045+00:00",
+    "created_ts": 1780376739,
+    "status": "OPEN"
   }
 ]
