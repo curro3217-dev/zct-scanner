@@ -331,5 +331,59 @@
     "timestamp": "2026-06-02T05:05:39.378045+00:00",
     "created_ts": 1780376739,
     "status": "OPEN"
+  },
+  {
+    "id": "NEAR_USDT_1780395235",
+    "symbol": "NEAR_USDT",
+    "direction": "LONG",
+    "entry_price": 2.675,
+    "sl": 2.6215,
+    "tp": 2.8355,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      2.678,
+      2.75475
+    ],
+    "level_gap_pct": 2.87,
+    "dist_to_level_pct": 0.11,
+    "consol_range_pct": 1.92,
+    "ch24": 14.27,
+    "ch7": -3.39,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 14.27,
+    "vol_ratio": 1159.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ANEARUSDT.P&interval=5",
+    "timestamp": "2026-06-02T10:13:55.955505+00:00",
+    "created_ts": 1780395235,
+    "status": "OPEN"
+  },
+  {
+    "id": "XLM_USDT_1780395239",
+    "symbol": "XLM_USDT",
+    "direction": "LONG",
+    "entry_price": 0.23307,
+    "sl": 0.2284086,
+    "tp": 0.2470542,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      0.2384116667,
+      0.239745
+    ],
+    "level_gap_pct": 0.56,
+    "dist_to_level_pct": 2.29,
+    "consol_range_pct": 1.81,
+    "ch24": -9.4,
+    "ch7": 56.17,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -9.4,
+    "vol_ratio": 1011.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AXLMUSDT.P&interval=5",
+    "timestamp": "2026-06-02T10:13:59.109299+00:00",
+    "created_ts": 1780395239,
+    "status": "OPEN"
   }
 ]
