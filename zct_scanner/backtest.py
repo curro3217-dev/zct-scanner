@@ -7,8 +7,10 @@ Replica la logica de entrada del scanner (main.py) pero recorriendo
 historico, para estimar el win-rate de la estrategia.
 
 Logica testeada (identica a main.py):
-  - Seleccion: movimiento >= 10% en 24h Y volumen >= $20M (reconstruidos
-    del propio historico de 15m). LONG si sube, SHORT si baja.
+  - Universo: monedas con volumen GLOBAL >= $100M (CoinGecko), igual que el
+    scanner. CoinGecko da el volumen de HOY, asi que el universo son las
+    monedas liquidas ahora, recorriendo su historia de precio.
+  - Seleccion: movimiento >= 10% en 24h O 7d. LONG si sube, SHORT si baja.
   - 2+ niveles de liquidez claros y cercanos (gap <= 2%/3%) en la direccion.
   - Nivel mas cercano a < 15% del precio.
   - Consolidacion (base estrecha) pegada al nivel + BREAKOUT de la vela.
@@ -22,7 +24,7 @@ estrategia es la misma; solo cambia el timeframe de las velas.
 
 Uso: python backtest.py
 Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (env vars)
-Opcional: MAX_COINS (cuantos perpetuos testear, por defecto 80).
+Opcional: COINGECKO_API_KEY (Demo, gratis).
 """
 
 import os
@@ -39,10 +41,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 # ══════════════════════════════════════════════════════════
 #  CONFIG  (mismos umbrales que main.py)
 # ══════════════════════════════════════════════════════════
-MIN_VOLUME_USD   = 20_000_000   # volumen 24h reconstruido (suma de 96 velas)
-MIN_MOVE_PCT     = 10.0         # movimiento minimo 24h
-SL_PCT           = 0.02         # 2%
-TP_PCT           = 0.06         # 6%  (RR 1:3)
+MIN_VOLUME_GLOBAL = 100_000_000  # $100M volumen global 24h (CoinGecko), igual que el scanner
+MIN_MOVE_PCT      = 10.0         # movimiento minimo 24h O 7d
+SL_PCT            = 0.02         # 2%
+TP_PCT            = 0.06         # 6%  (RR 1:3)
 
 PIVOT_K          = 2
 LEVEL_TOL_PCT    = 0.006
@@ -65,6 +67,7 @@ MAX_GAPS_ALLOWED = 3
 
 LEVEL_WINDOW     = 200          # velas usadas para detectar niveles (= limit live)
 CHANGE_LB        = 96           # 96 velas de 15m = 24h
+CHANGE_LB_7D     = 672          # 672 velas de 15m = 7 dias
 OUTCOME_CANDLES  = 32           # 8h de ventana (igual que checker.py)
 COOLDOWN_CANDLES = 8            # 2h entre setups del mismo symbol+side (= COOLDOWN_MIN/15)
 
@@ -77,14 +80,15 @@ BASE = "https://contract.mexc.com/api/v1/contract"
 # Cuantos perpetuos (por volumen) testear. Configurable con MAX_COINS.
 MAX_COINS = int(float(os.environ.get("MAX_COINS", 80)))
 
-# Lista de respaldo si la API de tickers falla (solo se usa como fallback).
+# Lista de respaldo si CoinGecko falla.
 FALLBACK_COINS = [
     "BTC_USDT", "ETH_USDT", "BNB_USDT", "SOL_USDT", "XRP_USDT",
     "DOGE_USDT", "ADA_USDT", "AVAX_USDT", "LINK_USDT", "DOT_USDT",
 ]
 
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "")
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")  # Demo (opcional)
 
 
 # ══════════════════════════════════════════════════════════
@@ -109,26 +113,33 @@ def get_klines(symbol, interval, limit=1500):
 
 def build_universe():
     """
-    Universo dinamico: perpetuos USDT con volumen 24h >= $20M, ordenados por
-    volumen, limitado a MAX_COINS. Asi el backtest corre sobre las mismas
-    monedas liquidas que el scanner considera en vivo (no una lista fija de
-    mayores que casi nunca se mueven >=10%). Cae a FALLBACK_COINS si falla.
+    Universo = monedas con VOLUMEN GLOBAL (CoinGecko) >= MIN_VOLUME_GLOBAL que
+    existan como perpetuo USDT en MEXC (para tener klines historicas). Mismo
+    criterio de volumen que el scanner en vivo. CoinGecko solo da el volumen de
+    HOY, asi que el universo son las monedas liquidas AHORA, recorriendo su
+    historia de precio. Cae a FALLBACK_COINS si CoinGecko falla.
     """
     try:
-        r = requests.get(f"{BASE}/ticker", timeout=15)
-        data = r.json().get("data", [])
-        cands = []
-        for tk in data:
-            sym = tk.get("symbol", "")
-            if sym.endswith("_USDT") and (tk.get("amount24") or 0) >= MIN_VOLUME_USD:
-                cands.append((sym, tk.get("amount24") or 0))
-        cands.sort(key=lambda x: x[1], reverse=True)
-        coins = [s for s, _ in cands[:MAX_COINS]]
+        key = f"&x_cg_demo_api_key={COINGECKO_API_KEY}" if COINGECKO_API_KEY else ""
+        url = ("https://api.coingecko.com/api/v3/coins/markets"
+               "?vs_currency=usd&order=volume_desc&per_page=250&page=1" + key)
+        r = requests.get(url, timeout=20)
+        data = r.json()
+        coins, seen = [], set()
+        if isinstance(data, list):
+            for c in data:
+                s = (c.get("symbol") or "").upper()
+                if not s or s in seen:
+                    continue
+                seen.add(s)
+                if (c.get("total_volume") or 0) >= MIN_VOLUME_GLOBAL:
+                    coins.append(f"{s}_USDT")
         if coins:
-            log.info(f"Universo dinamico: {len(coins)} perpetuos USDT (vol >= $20M)")
-            return coins
+            log.info(f"Universo global: {len(coins)} monedas "
+                     f"(vol >= ${MIN_VOLUME_GLOBAL/1e6:.0f}M, CoinGecko)")
+            return coins[:MAX_COINS]
     except Exception as e:  # noqa: BLE001
-        log.error(f"build_universe fallo: {e}")
+        log.error(f"build_universe global fallo: {e}")
     log.warning("Usando lista de respaldo (FALLBACK_COINS)")
     return FALLBACK_COINS
 
@@ -270,7 +281,7 @@ def backtest_coin(symbol):
     results = []
     d15 = get_klines(symbol, "15m", limit=1500)
     time.sleep(0.2)
-    min_needed = LEVEL_WINDOW + CHANGE_LB + OUTCOME_CANDLES + 5
+    min_needed = LEVEL_WINDOW + CHANGE_LB_7D + OUTCOME_CANDLES + 5
     if not d15 or len(d15.get("close", [])) < min_needed:
         n_got = len(d15["close"]) if d15 else 0
         log.warning(f"{symbol}: datos insuficientes ({n_got} velas 15m)")
@@ -279,12 +290,13 @@ def backtest_coin(symbol):
     closes = d15["close"]
     highs = d15["high"]
     lows = d15["low"]
-    amounts = d15.get("amount", d15.get("vol", [0.0] * len(closes)))
     n = len(closes)
     max_gap = GAP_TOP_COIN if base_asset(symbol) in TOP_COINS else GAP_ALTCOIN
 
     last_signal = {}  # (side) -> idx, para cooldown
-    start = max(LEVEL_WINDOW, CHANGE_LB)
+    # El volumen ya esta filtrado a nivel de universo (global, CoinGecko); aqui
+    # NO se filtra volumen por vela. Necesitamos 7d de historia para el cambio 7d.
+    start = max(LEVEL_WINDOW, CHANGE_LB_7D)
     end = n - OUTCOME_CANDLES - 1
 
     for idx in range(start, end):
@@ -292,22 +304,21 @@ def backtest_coin(symbol):
         if price <= 0:
             continue
 
-        # --- filtro de volumen 24h (suma de las ultimas 96 velas) ---------- #
-        vol24 = sum(amounts[idx - CHANGE_LB + 1: idx + 1])
-        if vol24 < MIN_VOLUME_USD:
+        # --- movimiento 24h Y 7d (igual que el scanner) y direccion -------- #
+        ref24 = closes[idx - CHANGE_LB]
+        ref7d = closes[idx - CHANGE_LB_7D]
+        if ref24 <= 0 or ref7d <= 0:
             continue
-
-        # --- filtro de movimiento 24h y direccion -------------------------- #
-        ref = closes[idx - CHANGE_LB]
-        if ref <= 0:
+        ch24 = (price - ref24) / ref24 * 100.0
+        ch7 = (price - ref7d) / ref7d * 100.0
+        up   = (ch24 >= MIN_MOVE_PCT) or (ch7 >= MIN_MOVE_PCT)
+        down = (ch24 <= -MIN_MOVE_PCT) or (ch7 <= -MIN_MOVE_PCT)
+        if not (up or down):
             continue
-        ch24 = (price - ref) / ref * 100.0
-        if ch24 >= MIN_MOVE_PCT:
-            side = "LONG"
-        elif ch24 <= -MIN_MOVE_PCT:
-            side = "SHORT"
+        if up and down:
+            side = "LONG" if ch24 >= 0 else "SHORT"
         else:
-            continue
+            side = "LONG" if up else "SHORT"
 
         # --- cooldown ------------------------------------------------------ #
         if side in last_signal and (idx - last_signal[side]) < COOLDOWN_CANDLES:
@@ -458,7 +469,7 @@ def build_report(a, n_coins):
             "",
             _fmt_section("Por distancia del precio al nivel:", a["by_dist"]),
             "",
-            _fmt_section("Por fuerza del movimiento 24h:", a["by_change"]),
+            _fmt_section("Por fuerza del movimiento (24h):", a["by_change"]),
         ] if x is not None)
 
     parts = [
@@ -498,7 +509,7 @@ def send_telegram(msg):
 def main():
     log.info("=== TFZ Backtester iniciando ===")
     log.info(f"SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=1:3  "
-             f"move>={MIN_MOVE_PCT}%  vol>=${MIN_VOLUME_USD/1e6:.0f}M")
+             f"move>={MIN_MOVE_PCT}%  vol_global>=${MIN_VOLUME_GLOBAL/1e6:.0f}M")
 
     coins = build_universe()
     all_results = []
