@@ -1,30 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ Backtester — Trading From Zero (sustituye al backtester ZCT v8)
-===================================================================
-Replica la logica de entrada del scanner (main.py) pero recorriendo
-historico, para estimar el win-rate de la estrategia.
-
-Logica testeada (identica a main.py):
-  - Universo: monedas con volumen GLOBAL >= $100M (CoinGecko), igual que el
-    scanner. CoinGecko da el volumen de HOY, asi que el universo son las
-    monedas liquidas ahora, recorriendo su historia de precio.
-  - Seleccion: movimiento >= 10% en 24h O 7d. LONG si sube, SHORT si baja.
-  - 2+ niveles de liquidez claros y cercanos (gap <= 2%/3%) en la direccion.
-  - Nivel mas cercano a < 15% del precio.
-  - Consolidacion (base estrecha) pegada al nivel + BREAKOUT de la vela.
-  - Descarte de graficos no-tradeables.
-  - SL 2% | TP 6% (RR 1:3). Breakeven con > 25% de aciertos.
-  - Ventana de resultado: 8h (32 velas de 15m), igual que checker.py.
-
-DIVERGENCIA vs produccion: el backtest corre sobre 15m (no 5m) para tener
-~15 dias de historico con el limite de klines de MEXC. La estructura de la
-estrategia es la misma; solo cambia el timeframe de las velas.
+TFZ Backtester — Trading From Zero
+==================================
+Replica la logica del scanner (main.py) sobre historico de 15m.
+Seleccion intraday: movimiento >= 10% en 24h (el 7d ya no filtra).
+Mide cada setup contra DOS salidas: +6% fijo y el PRIMER NIVEL (salida TFZ),
+y reporta WR + expectancia (% medio por trade) de ambas.
 
 Uso: python backtest.py
-Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (env vars)
-Opcional: COINGECKO_API_KEY (Demo, gratis).
+Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID. Opcional: COINGECKO_API_KEY.
 """
 
 import os
@@ -41,8 +26,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 # ══════════════════════════════════════════════════════════
 #  CONFIG  (mismos umbrales que main.py)
 # ══════════════════════════════════════════════════════════
-MIN_VOLUME_GLOBAL = 100_000_000  # $100M volumen global 24h (CoinGecko), igual que el scanner
-MIN_MOVE_PCT      = 10.0         # movimiento minimo 24h O 7d
+MIN_VOLUME_GLOBAL = 100_000_000  # $100M volumen global 24h (CoinGecko)
+MIN_MOVE_PCT      = 10.0         # movimiento minimo 24h (intraday; el 7d ya no filtra)
 SL_PCT            = 0.02         # 2%
 TP_PCT            = 0.06         # 6%  (RR 1:3)
 
@@ -67,9 +52,8 @@ MAX_GAPS_ALLOWED = 3
 
 LEVEL_WINDOW     = 200          # velas usadas para detectar niveles (= limit live)
 CHANGE_LB        = 96           # 96 velas de 15m = 24h
-CHANGE_LB_7D     = 672          # 672 velas de 15m = 7 dias
 OUTCOME_CANDLES  = 32           # 8h de ventana (igual que checker.py)
-COOLDOWN_CANDLES = 8            # 2h entre setups del mismo symbol+side (= COOLDOWN_MIN/15)
+COOLDOWN_CANDLES = 8            # 2h entre setups del mismo symbol+side
 
 BREAKEVEN_WR     = 25.0         # con RR 1:3 necesitas > 25% de aciertos
 
@@ -77,10 +61,8 @@ INTERVAL_MAP = {"15m": "Min15", "1h": "Min60", "4h": "Hour4", "1d": "Day1"}
 
 BASE = "https://contract.mexc.com/api/v1/contract"
 
-# Cuantos perpetuos (por volumen) testear. Configurable con MAX_COINS.
 MAX_COINS = int(float(os.environ.get("MAX_COINS", 80)))
 
-# Lista de respaldo si CoinGecko falla.
 FALLBACK_COINS = [
     "BTC_USDT", "ETH_USDT", "BNB_USDT", "SOL_USDT", "XRP_USDT",
     "DOGE_USDT", "ADA_USDT", "AVAX_USDT", "LINK_USDT", "DOT_USDT",
@@ -92,7 +74,7 @@ COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")  # Demo (opcional)
 
 
 # ══════════════════════════════════════════════════════════
-#  API MEXC
+#  API
 # ══════════════════════════════════════════════════════════
 def get_klines(symbol, interval, limit=1500):
     try:
@@ -113,11 +95,10 @@ def get_klines(symbol, interval, limit=1500):
 
 def build_universe():
     """
-    Universo = monedas con VOLUMEN GLOBAL (CoinGecko) >= MIN_VOLUME_GLOBAL que
-    existan como perpetuo USDT en MEXC (para tener klines historicas). Mismo
-    criterio de volumen que el scanner en vivo. CoinGecko solo da el volumen de
-    HOY, asi que el universo son las monedas liquidas AHORA, recorriendo su
-    historia de precio. Cae a FALLBACK_COINS si CoinGecko falla.
+    Universo = monedas con VOLUMEN GLOBAL (CoinGecko) >= MIN_VOLUME_GLOBAL,
+    como perpetuo USDT en MEXC. Mismo criterio que el scanner. CoinGecko da el
+    volumen de HOY (monedas liquidas ahora, recorriendo su historia de precio).
+    Cae a FALLBACK_COINS si CoinGecko falla.
     """
     try:
         key = f"&x_cg_demo_api_key={COINGECKO_API_KEY}" if COINGECKO_API_KEY else ""
@@ -145,19 +126,15 @@ def build_universe():
 
 
 # ══════════════════════════════════════════════════════════
-#  DETECCION DE NIVELES (identica a main.py, sobre dicts de velas)
+#  DETECCION DE NIVELES (identica a main.py)
 # ══════════════════════════════════════════════════════════
 def base_asset(symbol):
     return symbol.split("_")[0]
 
 
 def _window(arrs, lo, hi):
-    """Construye lista de velas dict desde arrays paralelos, indices [lo, hi]."""
     o, h, l, c = arrs["open"], arrs["high"], arrs["low"], arrs["close"]
-    out = []
-    for j in range(lo, hi + 1):
-        out.append({"o": o[j], "h": h[j], "l": l[j], "c": c[j]})
-    return out
+    return [{"o": o[j], "h": h[j], "l": l[j], "c": c[j]} for j in range(lo, hi + 1)]
 
 
 def pivots(candles, k, kind):
@@ -216,11 +193,7 @@ def is_untradeable(candles):
 
 
 def breakout_at_last(candles, side, nearest_level):
-    """
-    Igual que find_consolidation de main.py pero el trigger es SIEMPRE la
-    ultima vela de 'candles' (en el backtest evaluamos cada vela como trigger,
-    no necesitamos mirar atras). Devuelve dict o None.
-    """
+    """find_consolidation con el trigger en la ultima vela. Devuelve dict o None."""
     if len(candles) < CONSOL_LOOKBACK + 1:
         return None
     base = candles[-(CONSOL_LOOKBACK + 1):-1]
@@ -253,13 +226,8 @@ def breakout_at_last(candles, side, nearest_level):
 # ══════════════════════════════════════════════════════════
 #  RESULTADO DEL TRADE
 # ══════════════════════════════════════════════════════════
-def simulate_outcome(direction, entry, future_highs, future_lows):
-    if direction == "LONG":
-        tp = entry * (1 + TP_PCT)
-        sl = entry * (1 - SL_PCT)
-    else:
-        tp = entry * (1 - TP_PCT)
-        sl = entry * (1 + SL_PCT)
+def simulate(direction, entry, tp, sl, future_highs, future_lows):
+    """WIN si toca tp, LOSS si toca sl (tp primero si ambos), TIMEOUT si no."""
     for high, low in zip(future_highs, future_lows):
         if direction == "LONG":
             if high >= tp:
@@ -281,7 +249,7 @@ def backtest_coin(symbol):
     results = []
     d15 = get_klines(symbol, "15m", limit=1500)
     time.sleep(0.2)
-    min_needed = LEVEL_WINDOW + CHANGE_LB_7D + OUTCOME_CANDLES + 5
+    min_needed = LEVEL_WINDOW + CHANGE_LB + OUTCOME_CANDLES + 5
     if not d15 or len(d15.get("close", [])) < min_needed:
         n_got = len(d15["close"]) if d15 else 0
         log.warning(f"{symbol}: datos insuficientes ({n_got} velas 15m)")
@@ -293,10 +261,8 @@ def backtest_coin(symbol):
     n = len(closes)
     max_gap = GAP_TOP_COIN if base_asset(symbol) in TOP_COINS else GAP_ALTCOIN
 
-    last_signal = {}  # (side) -> idx, para cooldown
-    # El volumen ya esta filtrado a nivel de universo (global, CoinGecko); aqui
-    # NO se filtra volumen por vela. Necesitamos 7d de historia para el cambio 7d.
-    start = max(LEVEL_WINDOW, CHANGE_LB_7D)
+    last_signal = {}
+    start = max(LEVEL_WINDOW, CHANGE_LB)
     end = n - OUTCOME_CANDLES - 1
 
     for idx in range(start, end):
@@ -304,27 +270,21 @@ def backtest_coin(symbol):
         if price <= 0:
             continue
 
-        # --- movimiento 24h Y 7d (igual que el scanner) y direccion -------- #
+        # --- movimiento 24h (intraday): SOLO el 24h decide la direccion ---- #
         ref24 = closes[idx - CHANGE_LB]
-        ref7d = closes[idx - CHANGE_LB_7D]
-        if ref24 <= 0 or ref7d <= 0:
+        if ref24 <= 0:
             continue
         ch24 = (price - ref24) / ref24 * 100.0
-        ch7 = (price - ref7d) / ref7d * 100.0
-        up   = (ch24 >= MIN_MOVE_PCT) or (ch7 >= MIN_MOVE_PCT)
-        down = (ch24 <= -MIN_MOVE_PCT) or (ch7 <= -MIN_MOVE_PCT)
-        if not (up or down):
-            continue
-        if up and down:
-            side = "LONG" if ch24 >= 0 else "SHORT"
+        if ch24 >= MIN_MOVE_PCT:
+            side = "LONG"
+        elif ch24 <= -MIN_MOVE_PCT:
+            side = "SHORT"
         else:
-            side = "LONG" if up else "SHORT"
+            continue
 
-        # --- cooldown ------------------------------------------------------ #
         if side in last_signal and (idx - last_signal[side]) < COOLDOWN_CANDLES:
             continue
 
-        # --- ventana de niveles -------------------------------------------- #
         w = _window(d15, idx - LEVEL_WINDOW + 1, idx)
         if is_untradeable(w):
             continue
@@ -353,12 +313,21 @@ def backtest_coin(symbol):
         if not consol:
             continue
 
-        # --- resultado ----------------------------------------------------- #
+        # --- resultado: dos salidas -------------------------------------- #
         fh = highs[idx + 1: idx + 1 + OUTCOME_CANDLES]
         fl = lows[idx + 1: idx + 1 + OUTCOME_CANDLES]
         if len(fh) < 4:
             continue
-        outcome = simulate_outcome(side, price, fh, fl)
+        if side == "LONG":
+            sl_price = price * (1 - SL_PCT)
+            tp2 = price * (1 + TP_PCT)
+        else:
+            sl_price = price * (1 + SL_PCT)
+            tp2 = price * (1 - TP_PCT)
+        tp1 = nearest
+
+        outcome = simulate(side, price, tp2, sl_price, fh, fl)        # vs +6%
+        outcome_tp1 = simulate(side, price, tp1, sl_price, fh, fl)    # vs 1er nivel
         last_signal[side] = idx
 
         ts = (datetime.utcfromtimestamp(d15["time"][idx]).strftime("%m-%d %H:%M")
@@ -367,11 +336,12 @@ def backtest_coin(symbol):
             "symbol": symbol,
             "ts": ts,
             "direction": side,
-            "dist_pct": round(dist * 100, 2),
+            "dist_pct": round(dist * 100, 2),   # ganancia si TP1 WIN
             "gap_pct": round(gap * 100, 2),
             "change_pct": round(ch24, 1),
             "consol_range_pct": consol["range_pct"],
-            "outcome": outcome,
+            "outcome": outcome,                 # contra +6%
+            "outcome_tp1": outcome_tp1,         # contra el primer nivel
         })
 
     log.info(f"{symbol}: {len(results)} setups")
@@ -381,12 +351,26 @@ def backtest_coin(symbol):
 # ══════════════════════════════════════════════════════════
 #  ANALISIS
 # ══════════════════════════════════════════════════════════
-def _wr(sub):
-    resolved = [r for r in sub if r["outcome"] in ("WIN", "LOSS")]
+def _wr(sub, key="outcome"):
+    resolved = [r for r in sub if r[key] in ("WIN", "LOSS")]
     if not resolved:
         return (0, 0, 0.0)
-    w = sum(1 for r in resolved if r["outcome"] == "WIN")
+    w = sum(1 for r in resolved if r[key] == "WIN")
     return (w, len(resolved), w / len(resolved) * 100)
+
+
+def _expectancy(rows, key, win_gain_pct):
+    """% medio por trade. WIN=+ganancia, LOSS=-SL%, TIMEOUT=0. Sobre TODOS."""
+    if not rows:
+        return 0.0
+    tot = 0.0
+    for r in rows:
+        o = r[key]
+        if o == "WIN":
+            tot += win_gain_pct(r) if callable(win_gain_pct) else win_gain_pct
+        elif o == "LOSS":
+            tot += -SL_PCT * 100
+    return tot / len(rows)
 
 
 def analyze(rows):
@@ -396,6 +380,16 @@ def analyze(rows):
     timeouts = sum(1 for r in rows if r["outcome"] == "TIMEOUT")
     resolved = wins + losses
     wr = wins / resolved * 100 if resolved else 0.0
+
+    wr_tp2_all = _wr(rows, "outcome")
+    wr_tp1_all = _wr(rows, "outcome_tp1")
+    exp_tp2 = _expectancy(rows, "outcome", TP_PCT * 100)
+    exp_tp1 = _expectancy(rows, "outcome_tp1", lambda r: r["dist_pct"])
+    by_dir_tp1 = {}
+    for d in ("LONG", "SHORT"):
+        sub = [r for r in rows if r["direction"] == d]
+        if sub:
+            by_dir_tp1[d] = _wr(sub, "outcome_tp1")
 
     by_dir = {}
     for d in ("LONG", "SHORT"):
@@ -415,16 +409,12 @@ def analyze(rows):
         if sub:
             by_dist[lbl] = _wr(sub)
 
-    by_change = {}
-    for lo, hi, lbl in [(10, 15, "10-15%"), (15, 25, "15-25%"), (25, 1e9, "25%+")]:
-        sub = [r for r in rows if lo <= abs(r["change_pct"]) < hi]
-        if sub:
-            by_change[lbl] = _wr(sub)
-
     return {
         "total": total, "wins": wins, "losses": losses, "timeouts": timeouts,
         "resolved": resolved, "wr": wr,
-        "by_dir": by_dir, "by_gap": by_gap, "by_dist": by_dist, "by_change": by_change,
+        "by_dir": by_dir, "by_gap": by_gap, "by_dist": by_dist,
+        "wr_tp2_all": wr_tp2_all, "wr_tp1_all": wr_tp1_all,
+        "exp_tp2": exp_tp2, "exp_tp1": exp_tp1, "by_dir_tp1": by_dir_tp1,
     }
 
 
@@ -444,7 +434,6 @@ def build_report(a, n_coins):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     if a["total"] == 0:
         body = "Sin setups en el periodo analizado."
-        conclusion = ""
     else:
         wr = a["wr"]
         if a["resolved"] < 20:
@@ -457,19 +446,32 @@ def build_report(a, n_coins):
         else:
             conclusion = f"NO RENTABLE: {wr:.0f}% de aciertos, por debajo del 25% de breakeven."
 
+        w2, n2, p2 = a["wr_tp2_all"]
+        w1, n1, p1 = a["wr_tp1_all"]
+        comparacion = "\n".join([
+            "=== Comparacion de salida (lo importante) ===",
+            (f"Salir en +6% (actual): WR {p2:.0f}% ({w2}/{n2})  ·  "
+             f"expectancia {a['exp_tp2']:+.2f}%/trade"),
+            (f"Salir en el 1er NIVEL (TFZ): WR {p1:.0f}% ({w1}/{n1})  ·  "
+             f"expectancia {a['exp_tp1']:+.2f}%/trade"),
+            ("Expectancia = % medio por trade (con SL 2%). Si es positiva, "
+             "esa salida gana dinero a largo plazo."),
+        ])
+
         body = "\n".join(x for x in [
-            (f"Aciertos: {wr:.0f}% — {a['wins']} ganadas / {a['losses']} perdidas / "
+            (f"Aciertos (+6%): {wr:.0f}% — {a['wins']} ganadas / {a['losses']} perdidas / "
              f"{a['resolved']} resueltas"),
             f"Timeouts (no tocaron TP ni SL en 8h): {a['timeouts']}  ·  Total setups: {a['total']}",
             conclusion,
             "",
-            _fmt_section("Por direccion:", a["by_dir"]),
+            comparacion,
+            "",
+            _fmt_section("Por direccion (salida +6%):", a["by_dir"]),
+            _fmt_section("Por direccion (salida 1er nivel):", a["by_dir_tp1"]),
             "",
             _fmt_section("Por cercania entre niveles (gap):", a["by_gap"]),
             "",
             _fmt_section("Por distancia del precio al nivel:", a["by_dist"]),
-            "",
-            _fmt_section("Por fuerza del movimiento (24h):", a["by_change"]),
         ] if x is not None)
 
     parts = [
@@ -509,7 +511,7 @@ def send_telegram(msg):
 def main():
     log.info("=== TFZ Backtester iniciando ===")
     log.info(f"SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=1:3  "
-             f"move>={MIN_MOVE_PCT}%  vol_global>=${MIN_VOLUME_GLOBAL/1e6:.0f}M")
+             f"move24h>={MIN_MOVE_PCT}%  vol_global>=${MIN_VOLUME_GLOBAL/1e6:.0f}M")
 
     coins = build_universe()
     all_results = []
@@ -526,7 +528,7 @@ def main():
         csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "backtest_results.csv")
         fields = ["symbol", "ts", "direction", "dist_pct", "gap_pct",
-                  "change_pct", "consol_range_pct", "outcome"]
+                  "change_pct", "consol_range_pct", "outcome", "outcome_tp1"]
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             writer.writeheader()
