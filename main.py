@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ZCT-SCANNER  ->  TFZ-SCANNER  (Trading From Zero)
-=================================================
-Scanner de setups intradia para perpetuos USDT en MEXC Futuros.
+TFZ-SCANNER (Trading From Zero) — scanner intradia para perpetuos USDT en MEXC.
 
-El VOLUMEN se mide global (CoinGecko), NUNCA MEXC. Seleccion intraday:
-movimiento >= 10% en 24h (el 7d ya no filtra). Estructura desde MEXC.
+El VOLUMEN y el CAMBIO 24h se leen de CoinGecko (global). MEXC aporta la lista
+de perpetuos, el lastPrice y las klines (estructura). CRUCE DE FUENTES: si el
+precio de CoinGecko no coincide con el de MEXC para un simbolo, es que CoinGecko
+cogio otra moneda con el mismo ticker (colision) y se descarta.
 
-Variables de entorno: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (ya configurados).
-Opcional: COINGECKO_API_KEY (Demo, gratis).
+Seleccion intraday: movimiento >= 10% en 24h. LONG si sube, SHORT si baja.
+
+Variables de entorno: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID. Opcional: COINGECKO_API_KEY.
 """
 
 import os
@@ -47,20 +48,22 @@ def _envb(name, default=False):
 
 BASE = "https://contract.mexc.com/api/v1/contract"
 
-# ---- Diagnostico ---------------------------------------------------------- #
-DIAG             = _envb("DIAG", True)   # imprime el embudo en cada corrida
+DIAG             = _envb("DIAG", True)   # imprime el embudo
 
 # ---- Seleccion de monedas ------------------------------------------------- #
-# Volumen SIEMPRE global (CoinGecko), NUNCA MEXC. Si CoinGecko falla, 0 candidatos.
 MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)  # $100M global 24h
 MIN_MOVE_PCT      = _envf("MIN_MOVE_PCT", 10.0)            # movimiento >= 10% en 24h (intraday)
-QUOTE             = "_USDT"     # solo perpetuos USDT
-COINGECKO_PAGES   = _envi("COINGECKO_PAGES", 1)           # 1 pagina = top 250 por volumen
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")  # Demo (opcional)
+QUOTE             = "_USDT"
+COINGECKO_PAGES   = _envi("COINGECKO_PAGES", 1)
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
+# Cruce de fuentes: si CoinGecko y MEXC difieren mas de esto en precio, es una
+# colision de simbolo (CoinGecko cogio otra moneda) -> se descarta.
+PRICE_TOL         = _envf("PRICE_TOL", 0.10)   # 10%
+VERIFY_LOG        = _envb("VERIFY_LOG", True)   # imprime el cruce de fuentes de cada candidato
 
 # ---- Parametros de trading (fijos) ---------------------------------------- #
-SL_PCT           = 0.02         # 2%
-TP_PCT           = 0.06         # 6%  (ratio 1:3)
+SL_PCT           = 0.02
+TP_PCT           = 0.06
 LEVERAGE         = 10
 
 # ---- Deteccion de niveles de liquidez (TFZ) ------------------------------- #
@@ -69,12 +72,12 @@ LEVEL_TOL_PCT    = _envf("LEVEL_TOL_PCT", 0.006)
 MIN_TOUCHES      = _envi("MIN_TOUCHES", 2)
 MIN_LEVELS       = _envi("MIN_LEVELS", 2)
 
-GAP_TOP_COIN     = _envf("GAP_TOP_COIN", 0.020)   # top coins: <= 2%
-GAP_ALTCOIN      = _envf("GAP_ALTCOIN", 0.030)    # altcoins:  <= 3%
+GAP_TOP_COIN     = _envf("GAP_TOP_COIN", 0.020)
+GAP_ALTCOIN      = _envf("GAP_ALTCOIN", 0.030)
 TOP_COINS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX",
              "LINK", "TRX", "DOT", "MATIC", "LTC", "BCH", "TON"}
 
-MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)  # 15%
+MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)
 
 # ---- Consolidacion / base ------------------------------------------------- #
 CONSOL_LOOKBACK  = _envi("CONSOL_LOOKBACK", 10)
@@ -93,7 +96,6 @@ MAX_GAPS_ALLOWED = _envi("MAX_GAPS_ALLOWED", 3)
 ALERTS_LOG       = "alerts_log.json"
 COOLDOWN_MIN     = _envi("COOLDOWN_MIN", 120)
 
-# ---- Embudo de diagnostico ------------------------------------------------ #
 FUNNEL = {
     "evaluados": 0, "datos_ok": 0, "tradeable": 0, "con_niveles": 0,
     "2_niveles_direccion": 0, "dist_ok": 0, "gap_ok": 0, "breakout_alerta": 0,
@@ -122,7 +124,6 @@ def _get(url, retries=3, timeout=15):
 
 
 def _get_raw(url, retries=3, timeout=20):
-    """GET que devuelve el JSON tal cual (lista o dict), sin formato MEXC."""
     last = None
     for i in range(retries):
         try:
@@ -137,7 +138,6 @@ def _get_raw(url, retries=3, timeout=20):
 
 
 def get_tickers():
-    """Lista bulk de todos los contratos MEXC (para saber que perps existen)."""
     d = _get(f"{BASE}/ticker")
     if not d or not d.get("success"):
         return []
@@ -146,9 +146,9 @@ def get_tickers():
 
 def get_global_market():
     """
-    Mapa {SYMBOL: {'vol': vol24_usd, 'ch24': %, 'ch7': %}} desde CoinGecko,
-    top por volumen. Para cada symbol nos quedamos con la moneda de MAYOR
-    volumen. Devuelve {} si falla -> ese ciclo no saca candidatos.
+    Mapa {SYMBOL: {'vol','ch24','ch7','price','name'}} desde CoinGecko, top por
+    volumen. Para cada symbol nos quedamos con la moneda de MAYOR volumen.
+    Devuelve {} si falla -> ese ciclo no saca candidatos.
     """
     key_param = f"&x_cg_demo_api_key={COINGECKO_API_KEY}" if COINGECKO_API_KEY else ""
     out = {}
@@ -161,19 +161,20 @@ def get_global_market():
             break
         for c in data:
             sym = (c.get("symbol") or "").upper()
-            if not sym or sym in out:          # primero = mayor volumen
+            if not sym or sym in out:
                 continue
             out[sym] = {
                 "vol": c.get("total_volume") or 0.0,
                 "ch24": c.get("price_change_percentage_24h"),
                 "ch7": c.get("price_change_percentage_7d_in_currency"),
+                "price": c.get("current_price"),   # para cruzar con MEXC
+                "name": c.get("name"),             # para identificar la moneda
             }
         time.sleep(1.5)
     return out
 
 
 def get_klines(symbol, interval, limit=200):
-    """Velas como dicts {t,o,h,l,c,vol,amount}, de mas antigua a mas reciente."""
     d = _get(f"{BASE}/kline/{symbol}?interval={interval}&limit={limit}")
     if not d or not d.get("success"):
         return []
@@ -204,7 +205,8 @@ def base_asset(symbol):
 def select_candidates(tickers, gmarket):
     """
     Filtra perpetuos USDT de MEXC con VOLUMEN GLOBAL (CoinGecko) y movimiento
-    24h (intraday). Si gmarket esta vacio devuelve [] (no usamos volumen MEXC).
+    24h. CRUCE DE FUENTES por precio para descartar colisiones de simbolo.
+    Si gmarket esta vacio devuelve [].
     """
     if not gmarket:
         return []
@@ -218,6 +220,15 @@ def select_candidates(tickers, gmarket):
         g = gmarket.get(base_asset(sym).upper())
         if not g:
             continue   # no esta entre las monedas de mayor volumen global
+
+        # --- CRUCE DE FUENTES: precio CoinGecko vs precio MEXC -------------- #
+        # Si difieren mucho, CoinGecko cogio OTRA moneda con el mismo simbolo.
+        mexc_price = tk.get("lastPrice")
+        cg_price = g.get("price")
+        if mexc_price and cg_price and abs(cg_price - mexc_price) / mexc_price > PRICE_TOL:
+            print(f"[COLISION] {sym}: MEXC={mexc_price:g}  CoinGecko('{g.get('name')}')={cg_price:g}"
+                  f"  -> descartada (no es la misma moneda)")
+            continue
 
         # --- VOLUMEN: global (CoinGecko), nunca MEXC ----------------------- #
         if (g.get("vol") or 0) < MIN_VOLUME_GLOBAL:
@@ -236,6 +247,10 @@ def select_candidates(tickers, gmarket):
             side = "SHORT"
         else:
             continue
+
+        if VERIFY_LOG:
+            print(f"[FUENTE] {sym}: MEXC={mexc_price:g} CG={cg_price:g} "
+                  f"ch24={ch24:+.1f}% vol=${(g.get('vol') or 0)/1e6:.0f}M ({g.get('name')}) -> {side}")
 
         out.append((sym, side, {
             "last": tk.get("lastPrice"),
@@ -291,7 +306,6 @@ def liquidity_levels(candles, side):
 # --------------------------------------------------------------------------- #
 
 def is_untradeable(candles):
-    """Anexo 3: mechas enormes sin estructura o demasiados gaps."""
     recent = candles[-WICK_LOOKBACK:]
     wicks = []
     for c in recent:
@@ -311,11 +325,6 @@ def is_untradeable(candles):
 
 
 def find_consolidation(candles, side, nearest_level):
-    """
-    Consolidacion (base) pegada al nivel + BREAKOUT. Prueba la ruptura en las
-    ultimas BREAKOUT_BARS velas (robustez de timing) y descarta entradas
-    tardias (MAX_EXTENSION). Devuelve dict o None.
-    """
     if len(candles) < CONSOL_LOOKBACK + 1:
         return None
 
@@ -349,7 +358,7 @@ def find_consolidation(candles, side, nearest_level):
                 continue
             if (last_close - hi) / hi > MAX_EXTENSION:
                 continue
-        else:  # SHORT
+        else:
             if (lo - nearest_level) / nearest_level > CONSOL_TO_LEVEL:
                 continue
             if not (trigger["c"] < lo):
@@ -375,8 +384,8 @@ def evaluate(symbol, side, info):
     if not price:
         return None
 
-    k5 = get_klines(symbol, "Min15", limit=200)   # 15m para niveles fuertes
-    k1 = get_klines(symbol, "Min5", limit=200)    # 5m para base + trigger
+    k5 = get_klines(symbol, "Min15", limit=200)
+    k1 = get_klines(symbol, "Min5", limit=200)
     if len(k1) < CONSOL_LOOKBACK + 5 or len(k5) < 20:
         return None
     _bump("datos_ok")
