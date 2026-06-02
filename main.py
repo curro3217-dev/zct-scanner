@@ -18,11 +18,12 @@ logica de la estrategia "Trading From Zero":
 Parametros de trading (fijos):
     SL 2% | TP 6% | Ratio 1:3 | Apalancamiento x10
 
-Las entradas se buscan en grafico de 5m; los niveles se detectan en 5m + 15m.
-El link de TradingView de la alerta apunta al grafico de 5m.
+El VOLUMEN se mide global (CoinGecko), NUNCA MEXC. La estructura (klines y
+niveles) se lee de MEXC. Entradas en 5m; niveles en 5m + 15m.
 
 Variables de entorno: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (ya configurados).
-Opcionales para calibrar: DIAG, MIN_VOLUME_USD, MIN_MOVE_PCT, PIVOT_K,
+Opcional: COINGECKO_API_KEY (Demo, gratis) para evitar errores 429.
+Calibrables: DIAG, MIN_VOLUME_GLOBAL, MIN_MOVE_PCT, COINGECKO_PAGES, PIVOT_K,
 LEVEL_TOL_PCT, MIN_TOUCHES, MIN_LEVELS, GAP_TOP_COIN, GAP_ALTCOIN,
 MAX_DIST_TO_LEVEL, CONSOL_LOOKBACK, CONSOL_MAX_RANGE, CONSOL_TO_LEVEL,
 BREAKOUT_BARS, MAX_EXTENSION, MAX_MEAN_WICK, MAX_GAP_PCT, MAX_GAPS_ALLOWED,
@@ -71,10 +72,16 @@ BASE = "https://contract.mexc.com/api/v1/contract"
 # DIAG=1 imprime el embudo (cuantos candidatos mueren en cada filtro).
 DIAG             = _envb("DIAG", True)   # por defecto activo mientras calibramos
 
-# ---- Seleccion de monedas (se mantiene de lo anterior) -------------------- #
-MIN_VOLUME_USD   = _envf("MIN_VOLUME_USD", 20_000_000)  # vol MEXC 24h ($20M~$100M global)
-MIN_MOVE_PCT     = _envf("MIN_MOVE_PCT", 10.0)          # movimiento >= 10% en 24h O 7d
-QUOTE            = "_USDT"      # solo perpetuos USDT
+# ---- Seleccion de monedas ------------------------------------------------- #
+# El volumen se mide SIEMPRE global (CoinGecko), NUNCA MEXC. Si CoinGecko falla,
+# no se generan candidatos (preferimos no operar a usar un volumen equivocado).
+MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)  # $100M global 24h
+MIN_MOVE_PCT      = _envf("MIN_MOVE_PCT", 10.0)            # movimiento >= 10% en 24h O 7d
+QUOTE             = "_USDT"     # solo perpetuos USDT
+COINGECKO_PAGES   = _envi("COINGECKO_PAGES", 1)           # 1 pagina = top 250 por volumen (cubre todo >=$100M)
+# API key gratuita "Demo" de CoinGecko (opcional). Si esta como secret, se usa
+# y casi nunca da error 429; si no, funciona con la API publica.
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 
 # ---- Parametros de trading (fijos) ---------------------------------------- #
 SL_PCT           = 0.02         # 2%
@@ -147,12 +154,57 @@ def _get(url, retries=3, timeout=15):
     return None
 
 
+def _get_raw(url, retries=3, timeout=20):
+    """GET que devuelve el JSON tal cual (lista o dict), sin asumir formato MEXC."""
+    last = None
+    for i in range(retries):
+        try:
+            req = urlrequest.Request(url, headers={"User-Agent": "tfz-scanner/1.0"})
+            with urlrequest.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode())
+        except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as e:
+            last = e
+            time.sleep(1.5 + i)
+    print(f"[WARN] GET raw fallo {url}: {last}")
+    return None
+
+
 def get_tickers():
     """Lista bulk de todos los contratos."""
     d = _get(f"{BASE}/ticker")
     if not d or not d.get("success"):
         return []
     return d.get("data", [])
+
+
+def get_global_market():
+    """
+    Mapa {SYMBOL: {'vol': vol24_usd, 'ch24': %, 'ch7': %}} desde CoinGecko,
+    ordenado por volumen (top COINGECKO_PAGES*250 monedas). Para cada symbol
+    nos quedamos con la moneda de MAYOR volumen (la dominante), evitando
+    colisiones de ticker. Devuelve {} si falla -> ese ciclo no saca candidatos.
+    Usa la API key Demo (COINGECKO_API_KEY) si esta configurada.
+    """
+    key_param = f"&x_cg_demo_api_key={COINGECKO_API_KEY}" if COINGECKO_API_KEY else ""
+    out = {}
+    for page in range(1, COINGECKO_PAGES + 1):
+        url = ("https://api.coingecko.com/api/v3/coins/markets"
+               "?vs_currency=usd&order=volume_desc&per_page=250"
+               f"&page={page}&price_change_percentage=24h,7d{key_param}")
+        data = _get_raw(url)
+        if not isinstance(data, list) or not data:
+            break
+        for c in data:
+            sym = (c.get("symbol") or "").upper()
+            if not sym or sym in out:          # primero = mayor volumen
+                continue
+            out[sym] = {
+                "vol": c.get("total_volume") or 0.0,
+                "ch24": c.get("price_change_percentage_24h"),
+                "ch7": c.get("price_change_percentage_7d_in_currency"),
+            }
+        time.sleep(1.5)   # cortesia con el rate limit de CoinGecko
+    return out
 
 
 def get_klines(symbol, interval, limit=200):
@@ -202,29 +254,39 @@ def change_24h_from_daily(symbol):
     return (last - prev) / prev * 100.0
 
 
-def select_candidates(tickers):
+def select_candidates(tickers, gmarket):
     """
-    Aplica los filtros de seleccion y devuelve [(symbol, side, info), ...].
-    side = 'LONG' si sube, 'SHORT' si baja.
-    Usa r7 del propio ticker para el cambio de 7d y solo llama a klines
-    diarias para confirmar el cambio de 24h de los que ya pasan volumen.
+    Filtra perpetuos USDT de MEXC usando el VOLUMEN GLOBAL de CoinGecko
+    (gmarket) y el cambio 24h/7d real de CoinGecko. MEXC solo aporta la lista
+    de perpetuos disponibles y el lastPrice; el volumen NUNCA sale de MEXC.
+
+    Si gmarket esta vacio (CoinGecko fallo), devuelve [] -> 0 candidatos.
+    Devuelve [(symbol, side, info), ...]. side='LONG' si sube, 'SHORT' si baja.
     """
+    if not gmarket:
+        return []   # sin datos globales no operamos (no usamos volumen MEXC)
+
     out = []
     for tk in tickers:
         sym = tk.get("symbol", "")
         if not sym.endswith(QUOTE):
             continue
-        if (tk.get("amount24") or 0) < MIN_VOLUME_USD:
+
+        g = gmarket.get(base_asset(sym).upper())
+        if not g:
+            continue   # no esta entre las monedas de mayor volumen global
+
+        # --- VOLUMEN: global (CoinGecko), nunca MEXC ----------------------- #
+        if (g.get("vol") or 0) < MIN_VOLUME_GLOBAL:
             continue
 
-        # 7d desde el propio ticker (riseFallRates.r7 viene en fraccion)
-        rr = tk.get("riseFallRates") or {}
-        ch7 = (rr.get("r7") or 0.0) * 100.0
-
-        # 24h calculado desde klines diarias (mas fiable que riseFallRate)
-        ch24 = change_24h_from_daily(sym)
-        if ch24 is None:
-            ch24 = (rr.get("r") or 0.0) * 100.0  # fallback
+        # --- CAMBIO 24h / 7d: reales de CoinGecko -------------------------- #
+        ch24 = g.get("ch24")
+        ch7 = g.get("ch7")
+        if ch24 is None and ch7 is None:
+            continue
+        ch24 = ch24 if ch24 is not None else 0.0
+        ch7 = ch7 if ch7 is not None else 0.0
 
         up   = (ch24 >= MIN_MOVE_PCT) or (ch7 >= MIN_MOVE_PCT)
         down = (ch24 <= -MIN_MOVE_PCT) or (ch7 <= -MIN_MOVE_PCT)
@@ -238,7 +300,7 @@ def select_candidates(tickers):
 
         out.append((sym, side, {
             "last": tk.get("lastPrice"),
-            "amount24": tk.get("amount24"),
+            "vol_global": g.get("vol") or 0.0,   # volumen global USD (CoinGecko)
             "ch24": round(ch24, 2),
             "ch7": round(ch7, 2),
         }))
@@ -462,7 +524,7 @@ def evaluate(symbol, side, info):
 
     now = dt.datetime.now(dt.timezone.utc)
     tv_sym = base_asset(symbol) + "USDT.P"
-    vol_millions = round((info.get("amount24") or 0) / 1_000_000, 0)
+    vol_millions = round((info.get("vol_global") or 0) / 1_000_000, 0)  # volumen GLOBAL en M
     # Nombres de campo EXACTOS que espera checker.py:
     #   direction, entry_price, timestamp, status='OPEN',
     #   lvl1_name, change_pct, vol_ratio
@@ -485,7 +547,7 @@ def evaluate(symbol, side, info):
         # --- campos heredados que checker.py/generate_stats aun usa ----------
         "lvl1_name": "TFZ_breakout",       # agrupacion "por nivel" en el resumen
         "change_pct": info.get("ch24"),    # % de cambio mostrado en el resumen
-        "vol_ratio": vol_millions,         # reutilizado: volumen MEXC en millones
+        "vol_ratio": vol_millions,         # volumen GLOBAL en millones (CoinGecko)
         # --------------------------------------------------------------------
         "tv_link": f"https://www.tradingview.com/chart/?symbol=MEXC%3A{tv_sym}&interval=5",
         "timestamp": now.isoformat(),      # checker.py -> alert['timestamp']
@@ -574,7 +636,13 @@ def main():
         print("[ERROR] No se pudieron obtener tickers.")
         return
 
-    candidates = select_candidates(tickers)
+    gmarket = get_global_market()
+    if not gmarket:
+        print("[WARN] CoinGecko no disponible este ciclo; sin candidatos (no usamos volumen MEXC).")
+    else:
+        print(f"CoinGecko: {len(gmarket)} monedas con volumen global cargadas.")
+
+    candidates = select_candidates(tickers, gmarket)
     print(f"Candidatos tras seleccion: {len(candidates)}")
 
     log = load_log()
