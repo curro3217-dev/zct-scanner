@@ -5,29 +5,11 @@ ZCT-SCANNER  ->  TFZ-SCANNER  (Trading From Zero)
 =================================================
 Scanner de setups intradia para perpetuos USDT en MEXC Futuros.
 
-Reemplaza la metodologia ZCT (30SMMA, conteo de cruces, vol ratio) por la
-logica de la estrategia "Trading From Zero":
-
-    - El precio se mueve hacia la LIQUIDEZ (stops detras de niveles).
-    - Buscamos 2+ NIVELES de liquidez claros y CERCANOS en la direccion
-      de la tendencia (resistencias para LONG, soportes para SHORT).
-    - El precio construye una CONSOLIDACION pegada al nivel mas cercano.
-    - La ENTRADA es el BREAKOUT con cierre fuera del rango.
-    - Descartamos graficos no-tradeables (mechas enormes, gaps, sin estructura).
-
-Parametros de trading (fijos):
-    SL 2% | TP 6% | Ratio 1:3 | Apalancamiento x10
-
-El VOLUMEN se mide global (CoinGecko), NUNCA MEXC. La estructura (klines y
-niveles) se lee de MEXC. Entradas en 5m; niveles en 5m + 15m.
+El VOLUMEN se mide global (CoinGecko), NUNCA MEXC. Seleccion intraday:
+movimiento >= 10% en 24h (el 7d ya no filtra). Estructura desde MEXC.
 
 Variables de entorno: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (ya configurados).
-Opcional: COINGECKO_API_KEY (Demo, gratis) para evitar errores 429.
-Calibrables: DIAG, MIN_VOLUME_GLOBAL, MIN_MOVE_PCT, COINGECKO_PAGES, PIVOT_K,
-LEVEL_TOL_PCT, MIN_TOUCHES, MIN_LEVELS, GAP_TOP_COIN, GAP_ALTCOIN,
-MAX_DIST_TO_LEVEL, CONSOL_LOOKBACK, CONSOL_MAX_RANGE, CONSOL_TO_LEVEL,
-BREAKOUT_BARS, MAX_EXTENSION, MAX_MEAN_WICK, MAX_GAP_PCT, MAX_GAPS_ALLOWED,
-COOLDOWN_MIN.
+Opcional: COINGECKO_API_KEY (Demo, gratis).
 """
 
 import os
@@ -39,10 +21,7 @@ from urllib import request as urlrequest
 from urllib import error as urlerror
 
 # --------------------------------------------------------------------------- #
-#  CONFIGURACION
-#  Todos los umbrales se pueden sobreescribir con variables de entorno
-#  (secrets o env vars del workflow) sin tocar el codigo. Ej: para aflojar,
-#  pon LEVEL_TOL_PCT=0.008 o MAX_DIST_TO_LEVEL=0.20 en el workflow.
+#  CONFIGURACION (todo sobreescribible por variable de entorno)
 # --------------------------------------------------------------------------- #
 
 def _envf(name, default):
@@ -69,19 +48,15 @@ def _envb(name, default=False):
 BASE = "https://contract.mexc.com/api/v1/contract"
 
 # ---- Diagnostico ---------------------------------------------------------- #
-# DIAG=1 imprime el embudo (cuantos candidatos mueren en cada filtro).
-DIAG             = _envb("DIAG", True)   # por defecto activo mientras calibramos
+DIAG             = _envb("DIAG", True)   # imprime el embudo en cada corrida
 
 # ---- Seleccion de monedas ------------------------------------------------- #
-# El volumen se mide SIEMPRE global (CoinGecko), NUNCA MEXC. Si CoinGecko falla,
-# no se generan candidatos (preferimos no operar a usar un volumen equivocado).
+# Volumen SIEMPRE global (CoinGecko), NUNCA MEXC. Si CoinGecko falla, 0 candidatos.
 MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)  # $100M global 24h
-MIN_MOVE_PCT      = _envf("MIN_MOVE_PCT", 10.0)            # movimiento >= 10% en 24h O 7d
+MIN_MOVE_PCT      = _envf("MIN_MOVE_PCT", 10.0)            # movimiento >= 10% en 24h (intraday)
 QUOTE             = "_USDT"     # solo perpetuos USDT
-COINGECKO_PAGES   = _envi("COINGECKO_PAGES", 1)           # 1 pagina = top 250 por volumen (cubre todo >=$100M)
-# API key gratuita "Demo" de CoinGecko (opcional). Si esta como secret, se usa
-# y casi nunca da error 429; si no, funciona con la API publica.
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
+COINGECKO_PAGES   = _envi("COINGECKO_PAGES", 1)           # 1 pagina = top 250 por volumen
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")  # Demo (opcional)
 
 # ---- Parametros de trading (fijos) ---------------------------------------- #
 SL_PCT           = 0.02         # 2%
@@ -89,47 +64,39 @@ TP_PCT           = 0.06         # 6%  (ratio 1:3)
 LEVERAGE         = 10
 
 # ---- Deteccion de niveles de liquidez (TFZ) ------------------------------- #
-PIVOT_K          = _envi("PIVOT_K", 2)            # ventana a cada lado del swing/pivot
-LEVEL_TOL_PCT    = _envf("LEVEL_TOL_PCT", 0.006)  # toques dentro de 0.6% = mismo nivel
-MIN_TOUCHES      = _envi("MIN_TOUCHES", 2)        # un nivel valido necesita >= N toques
-MIN_LEVELS       = _envi("MIN_LEVELS", 2)         # se exigen al menos N niveles (Anexo 5)
+PIVOT_K          = _envi("PIVOT_K", 2)
+LEVEL_TOL_PCT    = _envf("LEVEL_TOL_PCT", 0.006)
+MIN_TOUCHES      = _envi("MIN_TOUCHES", 2)
+MIN_LEVELS       = _envi("MIN_LEVELS", 2)
 
-# Distancia maxima ENTRE los dos niveles objetivo (Anexo 10)
 GAP_TOP_COIN     = _envf("GAP_TOP_COIN", 0.020)   # top coins: <= 2%
 GAP_ALTCOIN      = _envf("GAP_ALTCOIN", 0.030)    # altcoins:  <= 3%
 TOP_COINS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX",
              "LINK", "TRX", "DOT", "MATIC", "LTC", "BCH", "TON"}
 
-# Distancia maxima del PRECIO al nivel mas cercano (Anexo 11)
-MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)  # 15% en movimiento limpio
+MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)  # 15%
 
 # ---- Consolidacion / base ------------------------------------------------- #
-CONSOL_LOOKBACK  = _envi("CONSOL_LOOKBACK", 10)       # nº de velas 5m que forman la base
-CONSOL_MAX_RANGE = _envf("CONSOL_MAX_RANGE", 0.030)   # rango de la consolidacion <= 3%
-CONSOL_TO_LEVEL  = _envf("CONSOL_TO_LEVEL", 0.030)    # techo de la base a <= 3% del nivel
-BREAKOUT_BARS    = _envi("BREAKOUT_BARS", 2)          # busca la ruptura en las ultimas N velas
-MAX_EXTENSION    = _envf("MAX_EXTENSION", 0.015)      # no alertar si el precio ya se fue >1.5% del breakout
+CONSOL_LOOKBACK  = _envi("CONSOL_LOOKBACK", 10)
+CONSOL_MAX_RANGE = _envf("CONSOL_MAX_RANGE", 0.030)
+CONSOL_TO_LEVEL  = _envf("CONSOL_TO_LEVEL", 0.030)
+BREAKOUT_BARS    = _envi("BREAKOUT_BARS", 2)
+MAX_EXTENSION    = _envf("MAX_EXTENSION", 0.015)
 
 # ---- Filtro de graficos no-tradeables (Anexo 3) --------------------------- #
 WICK_LOOKBACK    = 30
-MAX_MEAN_WICK    = _envf("MAX_MEAN_WICK", 0.70)   # mecha media > 70% del rango -> sin estructura
-MAX_GAP_PCT      = _envf("MAX_GAP_PCT", 0.025)    # gaps > 2.5% frecuentes -> baja liquidez
+MAX_MEAN_WICK    = _envf("MAX_MEAN_WICK", 0.70)
+MAX_GAP_PCT      = _envf("MAX_GAP_PCT", 0.025)
 MAX_GAPS_ALLOWED = _envi("MAX_GAPS_ALLOWED", 3)
 
 # ---- Anti-spam / dedup ---------------------------------------------------- #
 ALERTS_LOG       = "alerts_log.json"
-COOLDOWN_MIN     = _envi("COOLDOWN_MIN", 120)     # no repetir mismo symbol+side en N min
+COOLDOWN_MIN     = _envi("COOLDOWN_MIN", 120)
 
-# ---- Embudo de diagnostico (se rellena en cada corrida) ------------------- #
+# ---- Embudo de diagnostico ------------------------------------------------ #
 FUNNEL = {
-    "evaluados": 0,
-    "datos_ok": 0,
-    "tradeable": 0,
-    "con_niveles": 0,
-    "2_niveles_direccion": 0,
-    "dist_ok": 0,
-    "gap_ok": 0,
-    "breakout_alerta": 0,
+    "evaluados": 0, "datos_ok": 0, "tradeable": 0, "con_niveles": 0,
+    "2_niveles_direccion": 0, "dist_ok": 0, "gap_ok": 0, "breakout_alerta": 0,
 }
 
 
@@ -155,7 +122,7 @@ def _get(url, retries=3, timeout=15):
 
 
 def _get_raw(url, retries=3, timeout=20):
-    """GET que devuelve el JSON tal cual (lista o dict), sin asumir formato MEXC."""
+    """GET que devuelve el JSON tal cual (lista o dict), sin formato MEXC."""
     last = None
     for i in range(retries):
         try:
@@ -170,7 +137,7 @@ def _get_raw(url, retries=3, timeout=20):
 
 
 def get_tickers():
-    """Lista bulk de todos los contratos."""
+    """Lista bulk de todos los contratos MEXC (para saber que perps existen)."""
     d = _get(f"{BASE}/ticker")
     if not d or not d.get("success"):
         return []
@@ -180,10 +147,8 @@ def get_tickers():
 def get_global_market():
     """
     Mapa {SYMBOL: {'vol': vol24_usd, 'ch24': %, 'ch7': %}} desde CoinGecko,
-    ordenado por volumen (top COINGECKO_PAGES*250 monedas). Para cada symbol
-    nos quedamos con la moneda de MAYOR volumen (la dominante), evitando
-    colisiones de ticker. Devuelve {} si falla -> ese ciclo no saca candidatos.
-    Usa la API key Demo (COINGECKO_API_KEY) si esta configurada.
+    top por volumen. Para cada symbol nos quedamos con la moneda de MAYOR
+    volumen. Devuelve {} si falla -> ese ciclo no saca candidatos.
     """
     key_param = f"&x_cg_demo_api_key={COINGECKO_API_KEY}" if COINGECKO_API_KEY else ""
     out = {}
@@ -203,15 +168,12 @@ def get_global_market():
                 "ch24": c.get("price_change_percentage_24h"),
                 "ch7": c.get("price_change_percentage_7d_in_currency"),
             }
-        time.sleep(1.5)   # cortesia con el rate limit de CoinGecko
+        time.sleep(1.5)
     return out
 
 
 def get_klines(symbol, interval, limit=200):
-    """
-    Devuelve lista de velas como dicts {t,o,h,l,c,vol,amount} ordenadas
-    de mas antigua a mas reciente. La API entrega arrays columnares.
-    """
+    """Velas como dicts {t,o,h,l,c,vol,amount}, de mas antigua a mas reciente."""
     d = _get(f"{BASE}/kline/{symbol}?interval={interval}&limit={limit}")
     if not d or not d.get("success"):
         return []
@@ -239,32 +201,13 @@ def base_asset(symbol):
     return symbol.split("_")[0]
 
 
-def change_24h_from_daily(symbol):
-    """
-    Cambio % de dia segun convencion previa: desde klines diarias
-    (close[-1] - close[-2]) / close[-2] * 100.
-    Evita el sesgo UTC+8 del campo riseFallRate del bulk.
-    """
-    d = get_klines(symbol, "Day1", limit=3)
-    if len(d) < 2:
-        return None
-    prev, last = d[-2]["c"], d[-1]["c"]
-    if not prev:
-        return None
-    return (last - prev) / prev * 100.0
-
-
 def select_candidates(tickers, gmarket):
     """
-    Filtra perpetuos USDT de MEXC usando el VOLUMEN GLOBAL de CoinGecko
-    (gmarket) y el cambio 24h/7d real de CoinGecko. MEXC solo aporta la lista
-    de perpetuos disponibles y el lastPrice; el volumen NUNCA sale de MEXC.
-
-    Si gmarket esta vacio (CoinGecko fallo), devuelve [] -> 0 candidatos.
-    Devuelve [(symbol, side, info), ...]. side='LONG' si sube, 'SHORT' si baja.
+    Filtra perpetuos USDT de MEXC con VOLUMEN GLOBAL (CoinGecko) y movimiento
+    24h (intraday). Si gmarket esta vacio devuelve [] (no usamos volumen MEXC).
     """
     if not gmarket:
-        return []   # sin datos globales no operamos (no usamos volumen MEXC)
+        return []
 
     out = []
     for tk in tickers:
@@ -280,27 +223,23 @@ def select_candidates(tickers, gmarket):
         if (g.get("vol") or 0) < MIN_VOLUME_GLOBAL:
             continue
 
-        # --- CAMBIO 24h / 7d: reales de CoinGecko -------------------------- #
+        # --- CAMBIO 24h (intraday): SOLO el 24h decide la direccion -------- #
         ch24 = g.get("ch24")
+        if ch24 is None:
+            continue
         ch7 = g.get("ch7")
-        if ch24 is None and ch7 is None:
-            continue
-        ch24 = ch24 if ch24 is not None else 0.0
-        ch7 = ch7 if ch7 is not None else 0.0
+        ch7 = ch7 if ch7 is not None else 0.0   # solo informativo en la alerta, NO filtra
 
-        up   = (ch24 >= MIN_MOVE_PCT) or (ch7 >= MIN_MOVE_PCT)
-        down = (ch24 <= -MIN_MOVE_PCT) or (ch7 <= -MIN_MOVE_PCT)
-        if not (up or down):
-            continue
-        if up and down:
-            # señal contradictoria 24h vs 7d -> seguimos el de 24h (mas reciente)
-            side = "LONG" if ch24 >= 0 else "SHORT"
+        if ch24 >= MIN_MOVE_PCT:
+            side = "LONG"
+        elif ch24 <= -MIN_MOVE_PCT:
+            side = "SHORT"
         else:
-            side = "LONG" if up else "SHORT"
+            continue
 
         out.append((sym, side, {
             "last": tk.get("lastPrice"),
-            "vol_global": g.get("vol") or 0.0,   # volumen global USD (CoinGecko)
+            "vol_global": g.get("vol") or 0.0,
             "ch24": round(ch24, 2),
             "ch7": round(ch7, 2),
         }))
@@ -312,10 +251,6 @@ def select_candidates(tickers, gmarket):
 # --------------------------------------------------------------------------- #
 
 def pivots(candles, k, kind):
-    """
-    Indices de swing highs ('high') o swing lows ('low'):
-    el extremo de la vela i es el mayor/menor en la ventana [i-k, i+k].
-    """
     res = []
     n = len(candles)
     for i in range(k, n - k):
@@ -331,10 +266,6 @@ def pivots(candles, k, kind):
 
 
 def cluster_levels(prices, tol):
-    """
-    Agrupa precios cercanos (dentro de tol relativo) en niveles.
-    Devuelve [(precio_medio, n_toques), ...] ordenado por precio.
-    """
     if not prices:
         return []
     prices = sorted(prices)
@@ -348,13 +279,9 @@ def cluster_levels(prices, tol):
 
 
 def liquidity_levels(candles, side):
-    """
-    Niveles de liquidez validos (>= MIN_TOUCHES toques) en la direccion
-    del trade. Para LONG = resistencias (swing highs); SHORT = soportes.
-    """
     kind = "high" if side == "LONG" else "low"
     idx = pivots(candles, PIVOT_K, kind)
-    prices = [candles[i][kind[0]] for i in idx]  # 'h' o 'l'
+    prices = [candles[i][kind[0]] for i in idx]
     levels = cluster_levels(prices, LEVEL_TOL_PCT)
     return [(p, n) for (p, n) in levels if n >= MIN_TOUCHES]
 
@@ -385,17 +312,9 @@ def is_untradeable(candles):
 
 def find_consolidation(candles, side, nearest_level):
     """
-    Busca una consolidacion (base) pegada al nivel y un BREAKOUT.
-
-    Robustez de timing: prueba la ruptura en las ultimas BREAKOUT_BARS velas
-    (no solo la ultima), por si el cron se ejecuta una vela tarde. Para cada
-    posicion de trigger candidata, la base son las CONSOL_LOOKBACK velas
-    inmediatamente anteriores. Incluye un guardia anti-entrada-tardia
-    (MAX_EXTENSION): si el precio actual ya se fue demasiado lejos del
-    breakout, no alerta.
-
-    Devuelve dict con la info de la base si hay breakout valido, o None.
-    Se prueba de la vela mas reciente hacia atras (preferimos la mas fresca).
+    Consolidacion (base) pegada al nivel + BREAKOUT. Prueba la ruptura en las
+    ultimas BREAKOUT_BARS velas (robustez de timing) y descarta entradas
+    tardias (MAX_EXTENSION). Devuelve dict o None.
     """
     if len(candles) < CONSOL_LOOKBACK + 1:
         return None
@@ -403,7 +322,7 @@ def find_consolidation(candles, side, nearest_level):
     last_close = candles[-1]["c"]
 
     for back in range(0, max(1, BREAKOUT_BARS)):
-        ti = len(candles) - 1 - back          # indice del trigger candidato
+        ti = len(candles) - 1 - back
         if ti - CONSOL_LOOKBACK < 0:
             continue
         base = candles[ti - CONSOL_LOOKBACK:ti]
@@ -416,22 +335,18 @@ def find_consolidation(candles, side, nearest_level):
             continue
         rng_pct = (hi - lo) / lo
         if rng_pct > CONSOL_MAX_RANGE:
-            continue  # demasiado ancha: no es consolidacion
+            continue
 
-        # el trigger no debe ser una mecha gigante (cuerpo real)
         trng = trigger["h"] - trigger["l"]
         tbody = abs(trigger["c"] - trigger["o"])
         if trng > 0 and tbody / trng < 0.4:
             continue
 
         if side == "LONG":
-            # la base debe estar justo por debajo del nivel
             if (nearest_level - hi) / nearest_level > CONSOL_TO_LEVEL:
                 continue
-            # breakout: cierre por encima del techo del rango
             if not (trigger["c"] > hi):
                 continue
-            # anti-entrada-tardia: el precio actual no debe haberse ido lejos
             if (last_close - hi) / hi > MAX_EXTENSION:
                 continue
         else:  # SHORT
@@ -455,11 +370,6 @@ def find_consolidation(candles, side, nearest_level):
 # --------------------------------------------------------------------------- #
 
 def evaluate(symbol, side, info):
-    """
-    Devuelve un dict de alerta si el simbolo cumple el setup TFZ completo,
-    o None. Combina niveles de 5m + 15m, exige 2 niveles cercanos, valida
-    distancia al precio, consolidacion y breakout en 5m.
-    """
     _bump("evaluados")
     price = info.get("last")
     if not price:
@@ -475,13 +385,11 @@ def evaluate(symbol, side, info):
         return None
     _bump("tradeable")
 
-    # Niveles combinados 5m + 15m
     levels = liquidity_levels(k1, side) + liquidity_levels(k5, side)
     if not levels:
         return None
     _bump("con_niveles")
 
-    # Niveles en la direccion correcta respecto al precio
     if side == "LONG":
         target = sorted([(p, n) for (p, n) in levels if p > price], key=lambda x: x[0])
     else:
@@ -491,29 +399,25 @@ def evaluate(symbol, side, info):
         return None
     _bump("2_niveles_direccion")
 
-    l1, l2 = target[0][0], target[1][0]   # dos niveles mas cercanos
+    l1, l2 = target[0][0], target[1][0]
     nearest = l1
 
-    # Distancia al nivel mas cercano (Anexo 11)
     dist = abs(nearest - price) / price
     if dist > MAX_DIST_TO_LEVEL:
         return None
     _bump("dist_ok")
 
-    # Distancia entre los dos niveles (Anexo 10)
     gap = abs(l2 - l1) / l1
     max_gap = GAP_TOP_COIN if base_asset(symbol) in TOP_COINS else GAP_ALTCOIN
     if gap > max_gap:
         return None
     _bump("gap_ok")
 
-    # Consolidacion + breakout en 5m
     consol = find_consolidation(k1, side, nearest)
     if not consol:
         return None
     _bump("breakout_alerta")
 
-    # --- Construccion de la alerta ----------------------------------------- #
     entry = float(price)
     if side == "LONG":
         sl = round(entry * (1 - SL_PCT), 10)
@@ -524,15 +428,12 @@ def evaluate(symbol, side, info):
 
     now = dt.datetime.now(dt.timezone.utc)
     tv_sym = base_asset(symbol) + "USDT.P"
-    vol_millions = round((info.get("vol_global") or 0) / 1_000_000, 0)  # volumen GLOBAL en M
-    # Nombres de campo EXACTOS que espera checker.py:
-    #   direction, entry_price, timestamp, status='OPEN',
-    #   lvl1_name, change_pct, vol_ratio
+    vol_millions = round((info.get("vol_global") or 0) / 1_000_000, 0)
     return {
         "id": f"{symbol}_{int(now.timestamp())}",
         "symbol": symbol,
-        "direction": side,                 # checker.py -> alert['direction']
-        "entry_price": entry,              # checker.py -> alert['entry_price']
+        "direction": side,
+        "entry_price": entry,
         "sl": sl,
         "tp": tp,
         "leverage": LEVERAGE,
@@ -544,15 +445,13 @@ def evaluate(symbol, side, info):
         "consol_range_pct": consol["range_pct"],
         "ch24": info.get("ch24"),
         "ch7": info.get("ch7"),
-        # --- campos heredados que checker.py/generate_stats aun usa ----------
-        "lvl1_name": "TFZ_breakout",       # agrupacion "por nivel" en el resumen
-        "change_pct": info.get("ch24"),    # % de cambio mostrado en el resumen
-        "vol_ratio": vol_millions,         # volumen GLOBAL en millones (CoinGecko)
-        # --------------------------------------------------------------------
+        "lvl1_name": "TFZ_breakout",
+        "change_pct": info.get("ch24"),
+        "vol_ratio": vol_millions,
         "tv_link": f"https://www.tradingview.com/chart/?symbol=MEXC%3A{tv_sym}&interval=5",
-        "timestamp": now.isoformat(),      # checker.py -> alert['timestamp']
-        "created_ts": int(now.timestamp()),  # solo para dedup interno del scanner
-        "status": "OPEN",                  # checker.py filtra status == 'OPEN'
+        "timestamp": now.isoformat(),
+        "created_ts": int(now.timestamp()),
+        "status": "OPEN",
     }
 
 
@@ -585,7 +484,6 @@ def recently_alerted(log, symbol, side):
 
 
 def send_telegram(text):
-    # Mismo nombre de secret que checker.py: TELEGRAM_TOKEN / TELEGRAM_CHAT_ID
     token = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
     chat  = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat:
@@ -608,7 +506,7 @@ def send_telegram(text):
 def format_alert(a):
     arrow = "🟢 LONG" if a["direction"] == "LONG" else "🔴 SHORT"
     levels = " / ".join(f"{x:g}" for x in a["levels"])
-    tp1 = a["levels"][0]                       # primer nivel = cierre de la 1a mitad
+    tp1 = a["levels"][0]
     return (
         f"<b>{arrow}  {a['symbol']}</b>  (TFZ breakout)\n"
         f"Entrada: <b>{a['entry_price']:g}</b>\n"
@@ -653,7 +551,7 @@ def main():
             continue
         try:
             alert = evaluate(sym, side, info)
-        except Exception as e:  # noqa: BLE001  (robustez en produccion)
+        except Exception as e:  # noqa: BLE001
             print(f"[WARN] {sym} error: {e}")
             alert = None
         if not alert:
@@ -662,7 +560,7 @@ def main():
         log.append(alert)
         new_alerts += 1
         print(f"  ALERTA  {side}  {sym}  @ {alert['entry_price']}")
-        time.sleep(0.3)  # cortesia con la API
+        time.sleep(0.3)
 
     save_log(log)
 
