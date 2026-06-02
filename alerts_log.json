@@ -248,7 +248,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AXLMUSDT.P&interval=5",
     "timestamp": "2026-06-01T10:33:33.389184+00:00",
     "created_ts": 1780310013,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-02T10:13:44.858532+00:00"
   },
   {
     "id": "ONDO_USDT_1780376015",
