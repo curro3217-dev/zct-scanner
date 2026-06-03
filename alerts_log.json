@@ -417,5 +417,32 @@
     "timestamp": "2026-06-03T10:09:06.889336+00:00",
     "created_ts": 1780481346,
     "status": "OPEN"
+  },
+  {
+    "id": "ONDO_USDT_1780498834",
+    "symbol": "ONDO_USDT",
+    "direction": "LONG",
+    "entry_price": 0.4291,
+    "sl": 0.420518,
+    "tp": 0.454846,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      0.4304,
+      0.4309
+    ],
+    "level_gap_pct": 0.12,
+    "dist_to_level_pct": 0.3,
+    "consol_range_pct": 2.45,
+    "ch24": 18.07,
+    "ch7": 6.29,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 18.07,
+    "vol_ratio": 447.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AONDOUSDT.P&interval=5",
+    "timestamp": "2026-06-03T15:00:34.452025+00:00",
+    "created_ts": 1780498834,
+    "status": "OPEN"
   }
 ]
