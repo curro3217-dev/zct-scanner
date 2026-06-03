@@ -444,5 +444,59 @@
     "timestamp": "2026-06-03T15:00:34.452025+00:00",
     "created_ts": 1780498834,
     "status": "OPEN"
+  },
+  {
+    "id": "NEAR_USDT_1780512678",
+    "symbol": "NEAR_USDT",
+    "direction": "LONG",
+    "entry_price": 2.855,
+    "sl": 2.7979,
+    "tp": 3.0263,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      2.8697272727,
+      2.8846666667
+    ],
+    "level_gap_pct": 0.52,
+    "dist_to_level_pct": 0.52,
+    "consol_range_pct": 2.09,
+    "ch24": 11.27,
+    "ch7": 11.57,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 11.27,
+    "vol_ratio": 1440.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ANEARUSDT.P&interval=5",
+    "timestamp": "2026-06-03T18:51:18.638453+00:00",
+    "created_ts": 1780512678,
+    "status": "OPEN"
+  },
+  {
+    "id": "VVV_USDT_1780512682",
+    "symbol": "VVV_USDT",
+    "direction": "LONG",
+    "entry_price": 20.82,
+    "sl": 20.4036,
+    "tp": 22.0692,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      20.946,
+      21.3155
+    ],
+    "level_gap_pct": 1.76,
+    "dist_to_level_pct": 0.61,
+    "consol_range_pct": 2.51,
+    "ch24": 12.85,
+    "ch7": 16.8,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 12.85,
+    "vol_ratio": 143.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AVVVUSDT.P&interval=5",
+    "timestamp": "2026-06-03T18:51:22.646763+00:00",
+    "created_ts": 1780512682,
+    "status": "OPEN"
   }
 ]
