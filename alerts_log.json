@@ -502,5 +502,59 @@
     "created_ts": 1780512682,
     "status": "LOSS",
     "resolved_at": "2026-06-04T10:54:13.947740+00:00"
+  },
+  {
+    "id": "DASH_USDT_1780590917",
+    "symbol": "DASH_USDT",
+    "direction": "SHORT",
+    "entry_price": 35.19,
+    "sl": 35.8938,
+    "tp": 33.0786,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      35.18875,
+      34.95
+    ],
+    "level_gap_pct": 0.68,
+    "dist_to_level_pct": 0.0,
+    "consol_range_pct": 1.73,
+    "ch24": -10.04,
+    "ch7": -10.26,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -10.04,
+    "vol_ratio": 114.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ADASHUSDT.P&interval=5",
+    "timestamp": "2026-06-04T16:35:17.349291+00:00",
+    "created_ts": 1780590917,
+    "status": "OPEN"
+  },
+  {
+    "id": "IRYS_USDT_1780590918",
+    "symbol": "IRYS_USDT",
+    "direction": "SHORT",
+    "entry_price": 0.01989,
+    "sl": 0.0202878,
+    "tp": 0.0186966,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      0.0195977778,
+      0.01925
+    ],
+    "level_gap_pct": 1.77,
+    "dist_to_level_pct": 1.47,
+    "consol_range_pct": 1.61,
+    "ch24": -11.3,
+    "ch7": -19.28,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -11.3,
+    "vol_ratio": 133.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AIRYSUSDT.P&interval=5",
+    "timestamp": "2026-06-04T16:35:18.453002+00:00",
+    "created_ts": 1780590918,
+    "status": "OPEN"
   }
 ]
