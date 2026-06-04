@@ -416,7 +416,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AONDOUSDT.P&interval=5",
     "timestamp": "2026-06-03T10:09:06.889336+00:00",
     "created_ts": 1780481346,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-04T10:54:11.976008+00:00"
   },
   {
     "id": "ONDO_USDT_1780498834",
@@ -443,7 +444,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AONDOUSDT.P&interval=5",
     "timestamp": "2026-06-03T15:00:34.452025+00:00",
     "created_ts": 1780498834,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-04T10:54:12.635183+00:00"
   },
   {
     "id": "NEAR_USDT_1780512678",
@@ -470,7 +472,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ANEARUSDT.P&interval=5",
     "timestamp": "2026-06-03T18:51:18.638453+00:00",
     "created_ts": 1780512678,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-04T10:54:13.285339+00:00"
   },
   {
     "id": "VVV_USDT_1780512682",
@@ -497,6 +500,7 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AVVVUSDT.P&interval=5",
     "timestamp": "2026-06-03T18:51:22.646763+00:00",
     "created_ts": 1780512682,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-04T10:54:13.947740+00:00"
   }
 ]
