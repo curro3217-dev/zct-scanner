@@ -556,5 +556,32 @@
     "timestamp": "2026-06-04T16:35:18.453002+00:00",
     "created_ts": 1780590918,
     "status": "OPEN"
+  },
+  {
+    "id": "CELR_USDT_1780610945",
+    "symbol": "CELR_USDT",
+    "direction": "SHORT",
+    "entry_price": 0.002305,
+    "sl": 0.0023511,
+    "tp": 0.0021667,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      0.0022824444,
+      0.002273
+    ],
+    "level_gap_pct": 0.41,
+    "dist_to_level_pct": 0.98,
+    "consol_range_pct": 2.77,
+    "ch24": -10.79,
+    "ch7": -1.91,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -10.79,
+    "vol_ratio": 660.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ACELRUSDT.P&interval=5",
+    "timestamp": "2026-06-04T22:09:05.294553+00:00",
+    "created_ts": 1780610945,
+    "status": "OPEN"
   }
 ]
