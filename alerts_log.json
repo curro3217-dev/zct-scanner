@@ -528,7 +528,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ADASHUSDT.P&interval=5",
     "timestamp": "2026-06-04T16:35:17.349291+00:00",
     "created_ts": 1780590917,
-    "status": "OPEN"
+    "status": "WIN",
+    "resolved_at": "2026-06-05T11:33:09.164791+00:00"
   },
   {
     "id": "IRYS_USDT_1780590918",
@@ -555,7 +556,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AIRYSUSDT.P&interval=5",
     "timestamp": "2026-06-04T16:35:18.453002+00:00",
     "created_ts": 1780590918,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-05T11:33:10.074568+00:00"
   },
   {
     "id": "CELR_USDT_1780610945",
@@ -582,6 +584,7 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ACELRUSDT.P&interval=5",
     "timestamp": "2026-06-04T22:09:05.294553+00:00",
     "created_ts": 1780610945,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-05T11:33:11.005974+00:00"
   }
 ]
