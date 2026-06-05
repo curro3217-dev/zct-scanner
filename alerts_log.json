@@ -586,5 +586,32 @@
     "created_ts": 1780610945,
     "status": "LOSS",
     "resolved_at": "2026-06-05T11:33:11.005974+00:00"
+  },
+  {
+    "id": "TAO_USDT_1780680706",
+    "symbol": "TAO_USDT",
+    "direction": "SHORT",
+    "entry_price": 195.4,
+    "sl": 199.308,
+    "tp": 183.676,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      193.2325,
+      190.635
+    ],
+    "level_gap_pct": 1.34,
+    "dist_to_level_pct": 1.11,
+    "consol_range_pct": 3.0,
+    "ch24": -10.4,
+    "ch7": -24.02,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -10.4,
+    "vol_ratio": 303.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ATAOUSDT.P&interval=5",
+    "timestamp": "2026-06-05T17:31:46.332466+00:00",
+    "created_ts": 1780680706,
+    "status": "OPEN"
   }
 ]
