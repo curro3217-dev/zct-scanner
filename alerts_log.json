@@ -614,5 +614,32 @@
     "created_ts": 1780680706,
     "status": "WIN",
     "resolved_at": "2026-06-06T05:58:54.683156+00:00"
+  },
+  {
+    "id": "AAVE_USDT_1780733320",
+    "symbol": "AAVE_USDT",
+    "direction": "SHORT",
+    "entry_price": 61.32,
+    "sl": 62.5464,
+    "tp": 57.6408,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      61.2325,
+      60.52
+    ],
+    "level_gap_pct": 1.16,
+    "dist_to_level_pct": 0.14,
+    "consol_range_pct": 1.28,
+    "ch24": -10.14,
+    "ch7": -25.72,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -10.14,
+    "vol_ratio": 398.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AAAVEUSDT.P&interval=5",
+    "timestamp": "2026-06-06T08:08:40.668299+00:00",
+    "created_ts": 1780733320,
+    "status": "OPEN"
   }
 ]
