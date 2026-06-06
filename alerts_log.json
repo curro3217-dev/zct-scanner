@@ -641,5 +641,32 @@
     "timestamp": "2026-06-06T08:08:40.668299+00:00",
     "created_ts": 1780733320,
     "status": "OPEN"
+  },
+  {
+    "id": "XPL_USDT_1780756078",
+    "symbol": "XPL_USDT",
+    "direction": "SHORT",
+    "entry_price": 0.06578,
+    "sl": 0.0670956,
+    "tp": 0.0618332,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      0.06562,
+      0.0642633333
+    ],
+    "level_gap_pct": 2.07,
+    "dist_to_level_pct": 0.24,
+    "consol_range_pct": 2.01,
+    "ch24": -10.27,
+    "ch7": -30.25,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": -10.27,
+    "vol_ratio": 143.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AXPLUSDT.P&interval=5",
+    "timestamp": "2026-06-06T14:27:58.680370+00:00",
+    "created_ts": 1780756078,
+    "status": "OPEN"
   }
 ]
