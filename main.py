@@ -11,7 +11,7 @@ Variables de entorno: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID. Opcional: COINGECKO_API_
 """
 import os
 import json
-import time
+import timeh
 import math
 import datetime as dt
 from urllib import request as urlrequest
@@ -40,7 +40,7 @@ DIAG             = _envb("DIAG", True)   # imprime el embudo
 MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)  # $100M global 24h
 MIN_MOVE_PCT      = _envf("MIN_MOVE_PCT", 10.0)            # movimiento >= 10% en 24h (intraday)
 QUOTE             = "_USDT"
-COINGECKO_PAGES   = _envi("COINGECKO_PAGES", 1)
+COINGECKO_PAGES   = _envi("COINGECKO_PAGES", 2)
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 # Cruce de fuentes: si CoinGecko y MEXC difieren mas de esto en precio, es una
 # colision de simbolo (CoinGecko cogio otra moneda) -> se descarta.
