@@ -670,5 +670,32 @@
     "created_ts": 1780756078,
     "status": "LOSS",
     "resolved_at": "2026-06-07T10:32:44.457012+00:00"
+  },
+  {
+    "id": "DASH_USDT_1780853862",
+    "symbol": "DASH_USDT",
+    "direction": "LONG",
+    "entry_price": 37.32,
+    "sl": 36.5736,
+    "tp": 39.5592,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_breakout",
+    "levels": [
+      38.0914285714,
+      38.135
+    ],
+    "level_gap_pct": 0.11,
+    "dist_to_level_pct": 2.07,
+    "consol_range_pct": 1.47,
+    "ch24": 18.57,
+    "ch7": -5.53,
+    "lvl1_name": "TFZ_breakout",
+    "change_pct": 18.57,
+    "vol_ratio": 137.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ADASHUSDT.P&interval=5",
+    "timestamp": "2026-06-07T17:37:42.698984+00:00",
+    "created_ts": 1780853862,
+    "status": "OPEN"
   }
 ]
