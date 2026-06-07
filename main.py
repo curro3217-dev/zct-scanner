@@ -66,6 +66,7 @@ STABLES = {
     "FDUSD", "TUSD", "BUSD", "GUSD", "SUSD",
 }
 MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)
+MIN_DIST_TO_LEVEL = _envf("MIN_DIST_TO_LEVEL", 0.01)  # 1% minimo al nivel
 # ---- Consolidacion / base ------------------------------------------------- #
 CONSOL_LOOKBACK  = _envi("CONSOL_LOOKBACK", 10)
 CONSOL_MAX_RANGE = _envf("CONSOL_MAX_RANGE", 0.030)
@@ -346,7 +347,7 @@ def evaluate(symbol, side, info):
     l1, l2 = target[0][0], target[1][0]
     nearest = l1
     dist = abs(nearest - price) / price
-    if dist > MAX_DIST_TO_LEVEL:
+    if dist > MAX_DIST_TO_LEVEL or dist < MIN_DIST_TO_LEVEL:
         return None
     _bump("dist_ok")
     gap = abs(l2 - l1) / l1
@@ -361,10 +362,10 @@ def evaluate(symbol, side, info):
     entry = float(price)
     if side == "LONG":
         sl = round(entry * (1 - SL_PCT), 10)
-        tp = round(entry * (1 + TP_PCT), 10)
+        tp = round(l1, 10)
     else:
         sl = round(entry * (1 + SL_PCT), 10)
-        tp = round(entry * (1 - TP_PCT), 10)
+        tp = round(l1, 10)
     now = dt.datetime.now(dt.timezone.utc)
     tv_sym = base_asset(symbol) + "USDT.P"
     vol_millions = round((info.get("vol_global") or 0) / 1_000_000, 0)
@@ -434,22 +435,19 @@ def send_telegram(text):
 def format_alert(a):
     arrow = "🟢 LONG" if a["direction"] == "LONG" else "🔴 SHORT"
     levels = " / ".join(f"{x:g}" for x in a["levels"])
-    tp1 = a["levels"][0]
     return (
         f"<b>{arrow}  {a['symbol']}</b>  (TFZ breakout)\n"
         f"Entrada: <b>{a['entry_price']:g}</b>\n"
-        f"SL: {a['sl']:g}  (2%)   TP: {a['tp']:g}  (6%)   x{a['leverage']}\n"
+        f"SL: {a['sl']:g}  (2%)   TP: {a['tp']:g}  ({round(abs(a['tp']-a['entry_price'])/a['entry_price']*100,2)}%)   x{a['leverage']}\n"
         f"Niveles objetivo: {levels}  (gap {a['level_gap_pct']}%)\n"
         f"Dist. al nivel: {a['dist_to_level_pct']}%   Base: {a['consol_range_pct']}%\n"
         f"Cambio 24h: {a['ch24']}%   7d: {a['ch7']}%\n"
         f"\n— — Plan Omni (copiar) — —\n"
         f"Entrada: {a['entry_price']:g}\n"
         f"SL (-2%): {a['sl']:g}\n"
-        f"TP1 (50%) nivel: {tp1:g}\n"
-        f"TP2 (50%) +6%: {a['tp']:g}\n"
+        f"TP nivel: {a['tp']:g} ({round(abs(a['tp']-a['entry_price'])/a['entry_price']*100,2)}%)\n"
         f"<a href=\"{a['tv_link']}\">📈 Grafico 5m (TradingView)</a>"
     )
-# --------------------------------------------------------------------------- #
 #  MAIN
 # --------------------------------------------------------------------------- #
 def main():
