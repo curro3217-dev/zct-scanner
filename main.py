@@ -11,7 +11,7 @@ Variables de entorno: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID. Opcional: COINGECKO_API_
 """
 import os
 import json
-import timeh
+import time
 import math
 import datetime as dt
 from urllib import request as urlrequest
