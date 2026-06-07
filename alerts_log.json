@@ -640,7 +640,8 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AAAVEUSDT.P&interval=5",
     "timestamp": "2026-06-06T08:08:40.668299+00:00",
     "created_ts": 1780733320,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-07T10:32:43.903038+00:00"
   },
   {
     "id": "XPL_USDT_1780756078",
@@ -667,6 +668,7 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AXPLUSDT.P&interval=5",
     "timestamp": "2026-06-06T14:27:58.680370+00:00",
     "created_ts": 1780756078,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-07T10:32:44.457012+00:00"
   }
 ]
