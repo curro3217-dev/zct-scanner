@@ -250,7 +250,7 @@ def pivots(candles, k, kind):
     for i in range(k, n-k):
         if kind=="high":
             v = candles[i]["h"]
-            if all(candles[j]["h"]<=v for j in range(i-k,I+k+1) if j!=i): res.append(i)
+            if all(candles[j]["h"]<=v for j in range(i-k,i+k+1) if j!=i): res.append(i)
         else:
             v = candles[i]["l"]
             if all(candles[j]["l"]>=v for j in range(i-k,i+k+1) if j!=i): res.append(i)
