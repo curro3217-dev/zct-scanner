@@ -696,6 +696,7 @@
     "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ADASHUSDT.P&interval=5",
     "timestamp": "2026-06-07T17:37:42.698984+00:00",
     "created_ts": 1780853862,
-    "status": "OPEN"
+    "status": "LOSS",
+    "resolved_at": "2026-06-08T12:38:57.757609+00:00"
   }
 ]
