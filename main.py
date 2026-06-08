@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ-SCANNER — scanner intradia perpetuos USDT. Exchanges: MEXC + Bybit.
-Volumen/movimiento: Binance Futures. Klines: exchange nativo del perpetuo.
+TFZ-SCANNER — scanner intradia perpetuos USDT. Exchange: MEXC.
+Volumen/movimiento: Binance Futures. Klines: MEXC.
 """
 import os, json, time, math, datetime as dt
 from urllib import request as urlrequest
@@ -20,7 +20,6 @@ def _envb(name, default=False):
     return v.strip().lower() in ("1", "true", "yes", "si", "on")
 
 MEXC_BASE  = "https://contract.mexc.com/api/v1/contract"
-BYBIT_BASE = "https://bybit-proxy.curro3217.workers.dev/bybit/v5/market"
 DIAG       = _envb("DIAG", True)
 
 MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)
@@ -78,8 +77,6 @@ FUNNEL = {
 }
 def _bump(key): FUNNEL[key] = FUNNEL.get(key,0)+1
 
-# Mapeo de intervalos para Bybit
-BYBIT_IV = {"Min5":"5", "Min15":"15", "Hour1":"60", "Hour4":"240"}
 
 # ---- HTTP ----------------------------------------------------------------- #
 def _get(url, retries=3, timeout=15):
@@ -110,10 +107,6 @@ def get_mexc_tickers():
     if not d or not d.get("success"): return []
     return d.get("data",[])
 
-def get_bybit_tickers():
-    d = _get(f"{BYBIT_BASE}/tickers?category=linear")
-    if not d or d.get("retCode") != 0: return []
-    return d.get("result",{}).get("list",[])
 
 # ---- Binance Futures (volumen y movimiento 24h) -------------------------- #
 def get_binance_tickers():
@@ -153,23 +146,8 @@ def get_mexc_klines(symbol, interval, limit=200):
                     "amount":amt[i] if i<len(amt) else 0.0})
     return out
 
-def get_bybit_klines(symbol, interval, limit=200):
-    iv = BYBIT_IV.get(interval, "5")
-    d = _get(f"{BYBIT_BASE}/kline?category=linear&symbol={symbol}&interval={iv}&limit={limit}")
-    if not d or d.get("retCode") != 0: return []
-    raw = list(reversed(d.get("result",{}).get("list",[])))
-    out = []
-    for row in raw:
-        try:
-            out.append({"t":int(row[0]),"o":float(row[1]),"h":float(row[2]),
-                        "l":float(row[3]),"c":float(row[4]),"vol":float(row[5]),
-                        "amount":float(row[6])})
-        except (IndexError, ValueError): continue
-    return out
 
 def get_klines(symbol, interval, limit=200, exchange="MEXC"):
-    if exchange == "BYBIT":
-        return get_bybit_klines(symbol, interval, limit)
     return get_mexc_klines(symbol, interval, limit)
 
 # ---- Seleccion de monedas ------------------------------------------------- #
@@ -178,10 +156,9 @@ def base_asset(symbol, exchange="MEXC"):
         return symbol[:-4] if symbol.endswith("USDT") else symbol
     return symbol.split("_")[0]
 
-def select_candidates(mexc_tickers, bybit_tickers, bmarket):
+def select_candidates(mexc_tickers, bmarket):
     """
-    Cruza MEXC + Bybit con Binance Futures. Cada base se evalua solo una vez
-    (MEXC tiene prioridad; Bybit añade las que no estan en MEXC).
+    Cruza MEXC con Binance Futures. Filtra por volumen y movimiento 24h.
     Devuelve lista de (symbol, side, info, exchange).
     """
     if not bmarket: return []
@@ -213,31 +190,6 @@ def select_candidates(mexc_tickers, bybit_tickers, bmarket):
                      "ch24":round(ch24,2),"ch7":0.0,"base":base},
                     "MEXC"))
 
-    # --- Bybit (solo monedas nuevas no cubiertas por MEXC) ---
-    for tk in bybit_tickers:
-        sym = tk.get("symbol","")
-        if not sym.endswith("USDT"): continue
-        base = sym[:-4]
-        if base in STABLES or base in seen: continue
-        g = bmarket.get(base.upper())
-        if not g or (g.get("vol") or 0) < MIN_VOLUME_GLOBAL: continue
-        ch24 = g.get("ch24")
-        if ch24 is None: continue
-        if   ch24 >= MIN_MOVE_PCT:  side = "LONG"
-        elif ch24 <= -MIN_MOVE_PCT: side = "SHORT"
-        else: continue
-        bybit_price = float(tk.get("lastPrice") or 0)
-        cg_price    = g.get("price") or 0
-        if bybit_price and cg_price and abs(cg_price-bybit_price)/bybit_price > PRICE_TOL:
-            print(f"[COLISION] {sym}: BYBIT={bybit_price:g} CG('{g.get('name')}')={cg_price:g} -> descartada")
-            continue
-        if VERIFY_LOG:
-            print(f"[FUENTE:BYBIT] {sym}: {bybit_price:g} ch24={ch24:+.1f}% vol=${(g.get('vol') or 0)/1e6:.0f}M -> {side}")
-        seen.add(base)
-        out.append((sym, side,
-                    {"last":bybit_price,"vol_global":g.get("vol") or 0.0,
-                     "ch24":round(ch24,2),"ch7":0.0,"base":base},
-                    "BYBIT"))
     return out
 
 # ---- Deteccion de niveles ------------------------------------------------- #
@@ -522,9 +474,8 @@ def format_alert(a):
 def main():
     print(f"[{dt.datetime.utcnow().isoformat()}] TFZ-scanner inicio")
 
-    mexc_tickers  = get_mexc_tickers()
-    bybit_tickers = get_bybit_tickers()
-    print(f"Tickers: MEXC={len(mexc_tickers)} Bybit={len(bybit_tickers)}")
+    mexc_tickers = get_mexc_tickers()
+    print(f"Tickers: MEXC={len(mexc_tickers)}")
 
     bmarket = get_binance_tickers()
     if not bmarket:
@@ -532,7 +483,7 @@ def main():
         return
     print(f"Binance: {len(bmarket)} perpetuos USDT cargados.")
 
-    candidates = select_candidates(mexc_tickers, bybit_tickers, bmarket)
+    candidates = select_candidates(mexc_tickers, bmarket)
     print(f"Candidatos tras seleccion: {len(candidates)}")
 
     log = load_log(); new_alerts = 0
