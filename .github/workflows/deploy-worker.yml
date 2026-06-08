@@ -9,13 +9,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy worker to Cloudflare
+
+      - name: Create or find KV namespace
         run: |
-          curl -s -X PUT \
+          CREATE=$(curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/6c54770f3c48991d318f49027e0a3b03/storage/kv/namespaces" \
+            -H "Authorization: Bearer ${{ secrets.CF_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data '{"title":"bybit-proxy-binance-cache"}')
+          echo "Create result: $CREATE"
+          SUCCESS=$(echo "$CREATE" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(str(d.get("success","")).lower())')
+          if [ "$SUCCESS" = "true" ]; then
+            KV_ID=$(echo "$CREATE" | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"]["id"])')
+          else
+            LIST=$(curl -s "https://api.cloudflare.com/client/v4/accounts/6c54770f3c48991d318f49027e0a3b03/storage/kv/namespaces?per_page=100" \
+              -H "Authorization: Bearer ${{ secrets.CF_TOKEN }}")
+            KV_ID=$(echo "$LIST" | python3 -c 'import sys,json; ns=[n["id"] for n in json.load(sys.stdin)["result"] if n["title"]=="bybit-proxy-binance-cache"]; print(ns[0] if ns else "")')
+          fi
+          echo "KV_ID=$KV_ID" >> $GITHUB_ENV
+          echo "KV namespace ID: $KV_ID"
+
+      - name: Deploy worker with KV binding (multipart ES module)
+        run: |
+          METADATA='{"main_module":"worker.js","bindings":[{"type":"kv_namespace","name":"BINANCE_CACHE","namespace_id":"'"$KV_ID"'"}]}'
+          RESULT=$(curl -s -X PUT \
             "https://api.cloudflare.com/client/v4/accounts/6c54770f3c48991d318f49027e0a3b03/workers/scripts/bybit-proxy" \
             -H "Authorization: Bearer ${{ secrets.CF_TOKEN }}" \
-            -H "Content-Type: application/javascript" \
-            --data-binary @worker.js
+            -F "metadata=$METADATA;type=application/json" \
+            -F "worker.js=@worker.js;type=application/javascript+module")
+          echo "$RESULT"
+          echo "$RESULT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print("DEPLOY OK" if d.get("success") else "DEPLOY FAILED: "+str(d.get("errors","")))'
+
+      - name: Set cron trigger (every 5 min)
+        run: |
+          RESULT=$(curl -s -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/6c54770f3c48991d318f49027e0a3b03/workers/scripts/bybit-proxy/schedules" \
+            -H "Authorization: Bearer ${{ secrets.CF_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data '[{"cron":"*/5 * * * *"}]')
+          echo "$RESULT"
+
       - name: Enable Smart Placement
         run: |
           curl -s -X PATCH \
