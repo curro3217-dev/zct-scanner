@@ -67,6 +67,10 @@ STABLES = {
 }
 MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)
 MIN_DIST_TO_LEVEL = _envf("MIN_DIST_TO_LEVEL", 0.01)  # 1% minimo al nivel
+HTF_PIVOT_K     = _envi("HTF_PIVOT_K",     3)     # pivots mas estrictos en TF altos
+HTF_MIN_TOUCHES = _envi("HTF_MIN_TOUCHES",  1)     # 1 toque basta en 1h/4h
+HTF_GAP_MAX     = _envf("HTF_GAP_MAX",      0.05)  # gap tolerado entre niveles HTF
+TF_LABELS       = {1: "ltf", 2: "1h", 3: "4h"}
 # ---- Consolidacion / base ------------------------------------------------- #
 CONSOL_LOOKBACK  = _envi("CONSOL_LOOKBACK", 10)
 CONSOL_MAX_RANGE = _envf("CONSOL_MAX_RANGE", 0.030)
@@ -249,12 +253,14 @@ def cluster_levels(prices, tol):
         else:
             clusters.append([p])
     return [(sum(c) / len(c), len(c)) for c in clusters]
-def liquidity_levels(candles, side):
+def liquidity_levels(candles, side, pivot_k=None, min_touches=None):
+    pk = PIVOT_K if pivot_k is None else pivot_k
+    mt = MIN_TOUCHES if min_touches is None else min_touches
     kind = "high" if side == "LONG" else "low"
-    idx = pivots(candles, PIVOT_K, kind)
+    idx = pivots(candles, pk, kind)
     prices = [candles[i][kind[0]] for i in idx]
     levels = cluster_levels(prices, LEVEL_TOL_PCT)
-    return [(p, n) for (p, n) in levels if n >= MIN_TOUCHES]
+    return [(p, n) for (p, n) in levels if n >= mt]
 # --------------------------------------------------------------------------- #
 #  FILTROS DE CALIDAD
 # --------------------------------------------------------------------------- #
@@ -332,30 +338,55 @@ def evaluate(symbol, side, info):
     if is_untradeable(k1):
         return None
     _bump("tradeable")
-    levels = liquidity_levels(k1, side) + liquidity_levels(k5, side)
-    if not levels:
+    # ---- Niveles de liquidez: LTF (5m+15m) + HTF (1h+4h) ---- #
+    k1h = get_klines(symbol, "Hour1", limit=100)
+    k4h = get_klines(symbol, "Hour4", limit=50)
+    ltf_lvls = [(p, n, 1) for p, n in
+                liquidity_levels(k1, side) + liquidity_levels(k5, side)]
+    htf_lvls = []
+    if k1h and len(k1h) >= 10:
+        htf_lvls += [(p, n, 2) for p, n in
+                     liquidity_levels(k1h, side, pivot_k=HTF_PIVOT_K,
+                                      min_touches=HTF_MIN_TOUCHES)]
+    if k4h and len(k4h) >= 5:
+        htf_lvls += [(p, n, 3) for p, n in
+                     liquidity_levels(k4h, side, pivot_k=HTF_PIVOT_K,
+                                      min_touches=HTF_MIN_TOUCHES)]
+    all_lvls = ltf_lvls + htf_lvls
+    if not all_lvls:
         return None
     _bump("con_niveles")
+    # Niveles en la direccion correcta
     if side == "LONG":
-        target = sorted([(p, n) for (p, n) in levels if p > price], key=lambda x: x[0])
+        directional = [(p, n, tf) for p, n, tf in all_lvls if p > price]
     else:
-        target = sorted([(p, n) for (p, n) in levels if p < price],
-                        key=lambda x: x[0], reverse=True)
-    if len(target) < MIN_LEVELS:
+        directional = [(p, n, tf) for p, n, tf in all_lvls if p < price]
+    if not directional:
+        return None
+    # Nivel geometricamente mas cercano (para check de consolidacion)
+    geo_nearest = min(directional, key=lambda x: abs(x[0] - price))[0]
+    # Score: menor = mejor — premia cercania, toques y TF superior
+    def _lscore(p, n, tf_w):
+        return abs(p - price) / price / (min(n, 5) * tf_w)
+    scored = sorted(directional, key=lambda x: _lscore(x[0], x[1], x[2]))
+    if len(scored) < MIN_LEVELS:
         return None
     _bump("2_niveles_direccion")
-    l1, l2 = target[0][0], target[1][0]
+    l1, l1_n, l1_tf_w = scored[0]
+    l2 = scored[1][0]
     nearest = l1
     dist = abs(nearest - price) / price
     if dist > MAX_DIST_TO_LEVEL or dist < MIN_DIST_TO_LEVEL:
         return None
     _bump("dist_ok")
+    # Gap solo se exige en LTF — niveles HTF son significativos solos
     gap = abs(l2 - l1) / l1
-    max_gap = GAP_TOP_COIN if base_asset(symbol) in TOP_COINS else GAP_ALTCOIN
-    if gap > max_gap:
-        return None
+    if l1_tf_w < 2:
+        max_gap = GAP_TOP_COIN if base_asset(symbol) in TOP_COINS else GAP_ALTCOIN
+        if gap > max_gap:
+            return None
     _bump("gap_ok")
-    consol = find_consolidation(k1, side, nearest)
+    consol = find_consolidation(k1, side, geo_nearest)
     if not consol:
         return None
     _bump("breakout_alerta")
@@ -380,6 +411,8 @@ def evaluate(symbol, side, info):
         "timeframe": "5m",
         "setup": "TFZ_breakout",
         "levels": [round(l1, 10), round(l2, 10)],
+        "l1_tf": TF_LABELS.get(l1_tf_w, "ltf"),
+        "l1_touches": l1_n,
         "level_gap_pct": round(gap * 100, 2),
         "dist_to_level_pct": round(dist * 100, 2),
         "consol_range_pct": consol["range_pct"],
@@ -435,6 +468,7 @@ def send_telegram(text):
 def format_alert(a):
     arrow = "🟢 LONG" if a["direction"] == "LONG" else "🔴 SHORT"
     levels = " / ".join(f"{x:g}" for x in a["levels"])
+    tf_tag = f"[{a.get('l1_tf','?')} {a.get('l1_touches','?')}t] " if a.get('l1_tf') else ""
     return (
         f"<b>{arrow}  {a['symbol']}</b>  (TFZ breakout)\n"
         f"Entrada: <b>{a['entry_price']:g}</b>\n"
