@@ -20,12 +20,12 @@ def _envb(name, default=False):
     return v.strip().lower() in ("1", "true", "yes", "si", "on")
 
 MEXC_BASE  = "https://contract.mexc.com/api/v1/contract"
-BYBIT_BASE = "https://bybit-proxy.curro3217.workers.dev/v5/market"
+BYBIT_BASE = "https://bybit-proxy.curro3217.workers.dev/bybit/v5/market"
 DIAG       = _envb("DIAG", True)
 
 MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)
 MIN_MOVE_PCT      = _envf("MIN_MOVE_PCT", 10.0)
-BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
+BINANCE_FAPI = "https://bybit-proxy.curro3217.workers.dev/binance/fapi/v1"
 PRICE_TOL  = _envf("PRICE_TOL", 0.10)
 VERIFY_LOG = _envb("VERIFY_LOG", True)
 
