@@ -20,7 +20,7 @@ def _envb(name, default=False):
     return v.strip().lower() in ("1", "true", "yes", "si", "on")
 
 MEXC_BASE  = "https://contract.mexc.com/api/v1/contract"
-BYBIT_BASE = "https://api.bybit.com/v5/market"
+BYBIT_BASE = "https://bybit-proxy.curro3217.workers.dev/v5/market"
 DIAG       = _envb("DIAG", True)
 
 MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)
