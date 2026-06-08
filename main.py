@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ-SCANNER (Trading From Zero) — scanner intradia para perpetuos USDT en MEXC.
+TFZ-SCANNER — scanner intradia perpetuos USDT. Exchanges: MEXC + Bybit.
+Volumen/movimiento: CoinGecko. Klines: exchange nativo del perpetuo.
 """
 import os, json, time, math, datetime as dt
 from urllib import request as urlrequest
@@ -18,12 +19,12 @@ def _envb(name, default=False):
     if v is None: return default
     return v.strip().lower() in ("1", "true", "yes", "si", "on")
 
-BASE = "https://contract.mexc.com/api/v1/contract"
-DIAG = _envb("DIAG", True)
+MEXC_BASE  = "https://contract.mexc.com/api/v1/contract"
+BYBIT_BASE = "https://api.bybit.com/v5/market"
+DIAG       = _envb("DIAG", True)
 
 MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)
 MIN_MOVE_PCT      = _envf("MIN_MOVE_PCT", 10.0)
-QUOTE             = "_USDT"
 COINGECKO_PAGES   = _envi("COINGECKO_PAGES", 2)
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 PRICE_TOL  = _envf("PRICE_TOL", 0.10)
@@ -42,24 +43,20 @@ GAP_ALTCOIN   = _envf("GAP_ALTCOIN",   0.030)
 TOP_COINS = {"BTC","ETH","SOL","BNB","XRP","DOGE","ADA","AVAX",
              "LINK","TRX","DOT","MATIC","LTC","BCH","TON"}
 STABLES = {
-    "USDT","USDC","DAI","PYUSD","RLUSD",
-    "USD1","USDG","USDCV","RUSD","USDS",
-    "FDUSD","TUSD","BUSD","GUSD","SUSD",
+    "USDT","USDC","DAI","PYUSD","RLUSD","USD1","USDG",
+    "USDCV","RUSD","USDS","FDUSD","TUSD","BUSD","GUSD","SUSD",
 }
 
 MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)
 MIN_DIST_TO_LEVEL = _envf("MIN_DIST_TO_LEVEL", 0.01)
 HTF_PIVOT_K       = _envi("HTF_PIVOT_K",     3)
 HTF_MIN_TOUCHES   = _envi("HTF_MIN_TOUCHES", 1)
-HTF_GAP_MAX       = _envf("HTF_GAP_MAX",     0.05)
 TF_LABELS         = {1: "ltf", 2: "1h", 3: "4h", 4: "diag"}
 
-# Niveles diagonales (trendlines, TFZ Anexo 9)
 DIAG_MIN_TOUCHES = _envi("DIAG_MIN_TOUCHES", 3)
 DIAG_PIVOT_K     = _envi("DIAG_PIVOT_K",     3)
 DIAG_TOL_PCT     = _envf("DIAG_TOL_PCT",     0.008)
 
-# Deteccion de sweep previo (Formacion #2, TFZ)
 SWEEP_LOOKBACK = _envi("SWEEP_LOOKBACK", 30)
 SWEEP_TOL_PCT  = _envf("SWEEP_TOL_PCT",  0.005)
 
@@ -81,6 +78,9 @@ FUNNEL = {
     "2_niveles_direccion":0,"dist_ok":0,"gap_ok":0,"breakout_alerta":0,
 }
 def _bump(key): FUNNEL[key] = FUNNEL.get(key,0)+1
+
+# Mapeo de intervalos para Bybit
+BYBIT_IV = {"Min5":"5", "Min15":"15", "Hour1":"60", "Hour4":"240"}
 
 # ---- HTTP ----------------------------------------------------------------- #
 def _get(url, retries=3, timeout=15):
@@ -105,11 +105,18 @@ def _get_raw(url, retries=3, timeout=20):
             last = e; time.sleep(1.5+i)
     print(f"[WARN] GET raw fallo {url}: {last}"); return None
 
-def get_tickers():
-    d = _get(f"{BASE}/ticker")
+# ---- Tickers -------------------------------------------------------------- #
+def get_mexc_tickers():
+    d = _get(f"{MEXC_BASE}/ticker")
     if not d or not d.get("success"): return []
     return d.get("data",[])
 
+def get_bybit_tickers():
+    d = _get(f"{BYBIT_BASE}/tickers?category=linear")
+    if not d or d.get("retCode") != 0: return []
+    return d.get("result",{}).get("list",[])
+
+# ---- CoinGecko ------------------------------------------------------------ #
 def get_global_market():
     key_param = f"&x_cg_demo_api_key={COINGECKO_API_KEY}" if COINGECKO_API_KEY else ""
     out = {}
@@ -132,8 +139,9 @@ def get_global_market():
         time.sleep(1.5)
     return out
 
-def get_klines(symbol, interval, limit=200):
-    d = _get(f"{BASE}/kline/{symbol}?interval={interval}&limit={limit}")
+# ---- Klines --------------------------------------------------------------- #
+def get_mexc_klines(symbol, interval, limit=200):
+    d = _get(f"{MEXC_BASE}/kline/{symbol}?interval={interval}&limit={limit}")
     if not d or not d.get("success"): return []
     k = d.get("data",{})
     t = k.get("time",[])
@@ -147,46 +155,105 @@ def get_klines(symbol, interval, limit=200):
                     "amount":amt[i] if i<len(amt) else 0.0})
     return out
 
-# ---- Seleccion de monedas ------------------------------------------------- #
-def base_asset(symbol): return symbol.split("_")[0]
-
-def select_candidates(tickers, gmarket):
-    if not gmarket: return []
+def get_bybit_klines(symbol, interval, limit=200):
+    iv = BYBIT_IV.get(interval, "5")
+    d = _get(f"{BYBIT_BASE}/kline?category=linear&symbol={symbol}&interval={iv}&limit={limit}")
+    if not d or d.get("retCode") != 0: return []
+    raw = list(reversed(d.get("result",{}).get("list",[])))
     out = []
-    for tk in tickers:
+    for row in raw:
+        try:
+            out.append({"t":int(row[0]),"o":float(row[1]),"h":float(row[2]),
+                        "l":float(row[3]),"c":float(row[4]),"vol":float(row[5]),
+                        "amount":float(row[6])})
+        except (IndexError, ValueError): continue
+    return out
+
+def get_klines(symbol, interval, limit=200, exchange="MEXC"):
+    if exchange == "BYBIT":
+        return get_bybit_klines(symbol, interval, limit)
+    return get_mexc_klines(symbol, interval, limit)
+
+# ---- Seleccion de monedas ------------------------------------------------- #
+def base_asset(symbol, exchange="MEXC"):
+    if exchange == "BYBIT":
+        return symbol[:-4] if symbol.endswith("USDT") else symbol
+    return symbol.split("_")[0]
+
+def select_candidates(mexc_tickers, bybit_tickers, gmarket):
+    """
+    Cruza MEXC + Bybit con CoinGecko. Cada base se evalua solo una vez
+    (MEXC tiene prioridad; Bybit añade las que no estan en MEXC).
+    Devuelve lista de (symbol, side, info, exchange).
+    """
+    if not gmarket: return []
+    out  = []
+    seen = set()  # bases ya procesadas
+
+    # --- MEXC ---
+    for tk in mexc_tickers:
         sym = tk.get("symbol","")
-        if not sym.endswith(QUOTE): continue
-        if base_asset(sym) in STABLES: continue
-        g = gmarket.get(base_asset(sym).upper())
-        if not g: continue
-        mexc_price = tk.get("lastPrice"); cg_price = g.get("price")
-        if mexc_price and cg_price and abs(cg_price-mexc_price)/mexc_price > PRICE_TOL:
-            print(f"[COLISION] {sym}: MEXC={mexc_price:g} CoinGecko('{g.get('name')}')={cg_price:g} -> descartada")
-            continue
-        if (g.get("vol") or 0) < MIN_VOLUME_GLOBAL: continue
+        if not sym.endswith("_USDT"): continue
+        base = sym.split("_")[0]
+        if base in STABLES or base in seen: continue
+        g = gmarket.get(base.upper())
+        if not g or (g.get("vol") or 0) < MIN_VOLUME_GLOBAL: continue
         ch24 = g.get("ch24")
         if ch24 is None: continue
-        ch7 = g.get("ch7"); ch7 = ch7 if ch7 is not None else 0.0
-        if ch24 >= MIN_MOVE_PCT:       side = "LONG"
-        elif ch24 <= -MIN_MOVE_PCT:    side = "SHORT"
-        else:                          continue
+        if   ch24 >= MIN_MOVE_PCT:  side = "LONG"
+        elif ch24 <= -MIN_MOVE_PCT: side = "SHORT"
+        else: continue
+        mexc_price = tk.get("lastPrice"); cg_price = g.get("price")
+        if mexc_price and cg_price and abs(cg_price-mexc_price)/mexc_price > PRICE_TOL:
+            print(f"[COLISION] {sym}: MEXC={mexc_price:g} CG('{g.get('name')}')={cg_price:g} -> descartada")
+            continue
+        ch7 = g.get("ch7") or 0.0
         if VERIFY_LOG:
-            print(f"[FUENTE] {sym}: MEXC={mexc_price:g} CG={cg_price:g} "
-                  f"ch24={ch24:+.1f}% vol=${(g.get('vol') or 0)/1e6:.0f}M ({g.get('name')}) -> {side}")
-        out.append((sym, side, {"last":tk.get("lastPrice"),"vol_global":g.get("vol") or 0.0,
-                                "ch24":round(ch24,2),"ch7":round(ch7,2)}))
+            print(f"[FUENTE:MEXC] {sym}: {mexc_price:g} ch24={ch24:+.1f}% vol=${(g.get('vol') or 0)/1e6:.0f}M -> {side}")
+        seen.add(base)
+        out.append((sym, side,
+                    {"last":mexc_price,"vol_global":g.get("vol") or 0.0,
+                     "ch24":round(ch24,2),"ch7":round(ch7,2),"base":base},
+                    "MEXC"))
+
+    # --- Bybit (solo monedas nuevas no cubiertas por MEXC) ---
+    for tk in bybit_tickers:
+        sym = tk.get("symbol","")
+        if not sym.endswith("USDT"): continue
+        base = sym[:-4]
+        if base in STABLES or base in seen: continue
+        g = gmarket.get(base.upper())
+        if not g or (g.get("vol") or 0) < MIN_VOLUME_GLOBAL: continue
+        ch24 = g.get("ch24")
+        if ch24 is None: continue
+        if   ch24 >= MIN_MOVE_PCT:  side = "LONG"
+        elif ch24 <= -MIN_MOVE_PCT: side = "SHORT"
+        else: continue
+        bybit_price = float(tk.get("lastPrice") or 0)
+        cg_price    = g.get("price") or 0
+        if bybit_price and cg_price and abs(cg_price-bybit_price)/bybit_price > PRICE_TOL:
+            print(f"[COLISION] {sym}: BYBIT={bybit_price:g} CG('{g.get('name')}')={cg_price:g} -> descartada")
+            continue
+        ch7 = g.get("ch7") or 0.0
+        if VERIFY_LOG:
+            print(f"[FUENTE:BYBIT] {sym}: {bybit_price:g} ch24={ch24:+.1f}% vol=${(g.get('vol') or 0)/1e6:.0f}M -> {side}")
+        seen.add(base)
+        out.append((sym, side,
+                    {"last":bybit_price,"vol_global":g.get("vol") or 0.0,
+                     "ch24":round(ch24,2),"ch7":round(ch7,2),"base":base},
+                    "BYBIT"))
     return out
 
 # ---- Deteccion de niveles ------------------------------------------------- #
 def pivots(candles, k, kind):
     res = []; n = len(candles)
     for i in range(k, n-k):
-        if kind == "high":
+        if kind=="high":
             v = candles[i]["h"]
-            if all(candles[j]["h"] <= v for j in range(i-k,i+k+1) if j!=i): res.append(i)
+            if all(candles[j]["h"]<=v for j in range(i-k,I+k+1) if j!=i): res.append(i)
         else:
             v = candles[i]["l"]
-            if all(candles[j]["l"] >= v for j in range(i-k,i+k+1) if j!=i): res.append(i)
+            if all(candles[j]["l"]>=v for j in range(i-k,i+k+1) if j!=i): res.append(i)
     return res
 
 def cluster_levels(prices, tol):
@@ -211,9 +278,9 @@ def trendline_levels(candles, side, pivot_k=None, min_touches=None):
     mt = DIAG_MIN_TOUCHES if min_touches is None else min_touches
     kind = "high" if side=="LONG" else "low"
     idx = pivots(candles, pk, kind)
-    if len(idx) < mt: return []
+    if len(idx)<mt: return []
     pivot_pts   = [(i, candles[i][kind[0]]) for i in idx]
-    current_idx = len(candles) - 1
+    current_idx = len(candles)-1
     price       = candles[-1]["c"]
     seen = set(); results = []
     n = len(pivot_pts)
@@ -226,14 +293,14 @@ def trendline_levels(candles, side, pivot_k=None, min_touches=None):
             for ci in range(n):
                 if ci==ai or ci==bi: continue
                 xc,yc = pivot_pts[ci]
-                projected = y1 + slope*(xc-x1)
-                if projected>0 and abs(yc-projected)/projected <= DIAG_TOL_PCT:
-                    touch_count += 1
-            if touch_count < mt: continue
-            proj_now = y1 + slope*(current_idx-x1)
-            if proj_now <= 0: continue
-            if side=="LONG"  and proj_now <= price: continue
-            if side=="SHORT" and proj_now >= price: continue
+                projected = y1+slope*(xc-x1)
+                if projected>0 and abs(yc-projected)/projected<=DIAG_TOL_PCT:
+                    touch_count+=1
+            if touch_count<mt: continue
+            proj_now = y1+slope*(current_idx-x1)
+            if proj_now<=0: continue
+            if side=="LONG"  and proj_now<=price: continue
+            if side=="SHORT" and proj_now>=price: continue
             bucket = round(proj_now/price*200)
             if bucket in seen: continue
             seen.add(bucket)
@@ -242,70 +309,73 @@ def trendline_levels(candles, side, pivot_k=None, min_touches=None):
 
 def check_prior_sweep(candles, level_price, side):
     lookback = min(SWEEP_LOOKBACK, len(candles)-3)
-    if lookback <= 0: return False
-    tol = level_price * SWEEP_TOL_PCT
+    if lookback<=0: return False
+    tol = level_price*SWEEP_TOL_PCT
     for c in candles[-(lookback+3):-3]:
         if side=="LONG":
-            if c["h"] >= level_price-tol and c["c"] < level_price: return True
+            if c["h"]>=level_price-tol and c["c"]<level_price: return True
         else:
-            if c["l"] <= level_price+tol and c["c"] > level_price: return True
+            if c["l"]<=level_price+tol and c["c"]>level_price: return True
     return False
 
 # ---- Filtros de calidad --------------------------------------------------- #
 def is_untradeable(candles):
-    recent = candles[-WICK_LOOKBACK:]; wicks = []
+    recent = candles[-WICK_LOOKBACK:]; wicks=[]
     for c in recent:
-        rng = c["h"]-c["l"]
+        rng=c["h"]-c["l"]
         if rng<=0: continue
-        body = abs(c["c"]-c["o"]); wicks.append((rng-body)/rng)
-    if wicks and (sum(wicks)/len(wicks)) > MAX_MEAN_WICK: return True
-    gaps = 0
+        body=abs(c["c"]-c["o"]); wicks.append((rng-body)/rng)
+    if wicks and (sum(wicks)/len(wicks))>MAX_MEAN_WICK: return True
+    gaps=0
     for i in range(1,len(recent)):
-        prev = recent[i-1]["c"]
-        if prev and abs(recent[i]["o"]-prev)/prev > MAX_GAP_PCT: gaps+=1
-    return gaps > MAX_GAPS_ALLOWED
+        prev=recent[i-1]["c"]
+        if prev and abs(recent[i]["o"]-prev)/prev>MAX_GAP_PCT: gaps+=1
+    return gaps>MAX_GAPS_ALLOWED
 
 def find_consolidation(candles, side, nearest_level):
-    if len(candles) < CONSOL_LOOKBACK+1: return None
-    last_close = candles[-1]["c"]
+    if len(candles)<CONSOL_LOOKBACK+1: return None
+    last_close=candles[-1]["c"]
     for back in range(0, max(1,BREAKOUT_BARS)):
-        ti = len(candles)-1-back
-        if ti-CONSOL_LOOKBACK < 0: continue
-        base = candles[ti-CONSOL_LOOKBACK:ti]; trigger = candles[ti]
-        highs = [c["h"] for c in base]; lows = [c["l"] for c in base]
-        hi,lo = max(highs),min(lows)
+        ti=len(candles)-1-back
+        if ti-CONSOL_LOOKBACK<0: continue
+        base=candles[ti-CONSOL_LOOKBACK:ti]; trigger=candles[ti]
+        highs=[c["h"] for c in base]; lows=[c["l"] for c in base]
+        hi,lo=max(highs),min(lows)
         if lo<=0: continue
-        rng_pct = (hi-lo)/lo
-        if rng_pct > CONSOL_MAX_RANGE: continue
-        trng = trigger["h"]-trigger["l"]; tbody = abs(trigger["c"]-trigger["o"])
-        if trng>0 and tbody/trng < 0.4: continue
+        rng_pct=(hi-lo)/lo
+        if rng_pct>CONSOL_MAX_RANGE: continue
+        trng=trigger["h"]-trigger["l"]; tbody=abs(trigger["c"]-trigger["o"])
+        if trng>0 and tbody/trng<0.4: continue
         if side=="LONG":
-            if (nearest_level-hi)/nearest_level > CONSOL_TO_LEVEL: continue
-            if not (trigger["c"] > hi): continue
-            if (last_close-hi)/hi > MAX_EXTENSION: continue
+            if (nearest_level-hi)/nearest_level>CONSOL_TO_LEVEL: continue
+            if not (trigger["c"]>hi): continue
+            if (last_close-hi)/hi>MAX_EXTENSION: continue
         else:
-            if (lo-nearest_level)/nearest_level > CONSOL_TO_LEVEL: continue
-            if not (trigger["c"] < lo): continue
-            if (lo-last_close)/lo > MAX_EXTENSION: continue
+            if (lo-nearest_level)/nearest_level>CONSOL_TO_LEVEL: continue
+            if not (trigger["c"]<lo): continue
+            if (lo-last_close)/lo>MAX_EXTENSION: continue
         return {"consol_high":hi,"consol_low":lo,
                 "range_pct":round(rng_pct*100,2),
                 "trigger_close":trigger["c"],"trigger_back":back}
     return None
 
 # ---- Evaluacion ----------------------------------------------------------- #
-def evaluate(symbol, side, info):
+def evaluate(symbol, side, info, exchange="MEXC"):
     _bump("evaluados")
     price = info.get("last")
     if not price or price<=0: return None
-    k5 = get_klines(symbol,"Min15",limit=200)
-    k1 = get_klines(symbol,"Min5", limit=200)
+
+    k5  = get_klines(symbol,"Min15",limit=200,exchange=exchange)
+    k1  = get_klines(symbol,"Min5", limit=200,exchange=exchange)
     if len(k1)<CONSOL_LOOKBACK+5 or len(k5)<20: return None
     _bump("datos_ok")
     if is_untradeable(k1): return None
     _bump("tradeable")
-    k1h = get_klines(symbol,"Hour1",limit=100)
-    k4h = get_klines(symbol,"Hour4",limit=50)
-    ltf_lvls  = [(p,n,1,"ltf")  for p,n in
+
+    k1h = get_klines(symbol,"Hour1",limit=100,exchange=exchange)
+    k4h = get_klines(symbol,"Hour4",limit=50, exchange=exchange)
+
+    ltf_lvls  = [(p,n,1,"ltf") for p,n in
                  liquidity_levels(k1,side)+liquidity_levels(k5,side)]
     htf_lvls  = []
     if k1h and len(k1h)>=10:
@@ -316,43 +386,65 @@ def evaluate(symbol, side, info):
                      liquidity_levels(k4h,side,pivot_k=HTF_PIVOT_K,min_touches=HTF_MIN_TOUCHES)]
     diag_lvls = [(p,n,4,"diag") for p,n in
                  trendline_levels(k1,side)+trendline_levels(k5,side)]
-    all_lvls = ltf_lvls + htf_lvls + diag_lvls
+
+    all_lvls = ltf_lvls+htf_lvls+diag_lvls
     if not all_lvls: return None
     _bump("con_niveles")
+
     if side=="LONG":
         directional = [(p,n,tf,lbl) for p,n,tf,lbl in all_lvls if p>price]
     else:
         directional = [(p,n,tf,lbl) for p,n,tf,lbl in all_lvls if p<price]
     if not directional: return None
+
     geo_nearest = min(directional, key=lambda x: abs(x[0]-price))[0]
-    def _lscore(p,n,tf_w,lbl): return abs(p-price)/price / (min(n,5)*tf_w)
+
+    def _lscore(p,n,tf_w,lbl): return abs(p-price)/price/(min(n,5)*tf_w)
     scored = sorted(directional, key=lambda x: _lscore(x[0],x[1],x[2],x[3]))
     if len(scored)<MIN_LEVELS: return None
     _bump("2_niveles_direccion")
+
     l1,l1_n,l1_tf_w,l1_label = scored[0]
     l2 = scored[1][0]
+
     dist = abs(l1-price)/price
     if dist>MAX_DIST_TO_LEVEL or dist<MIN_DIST_TO_LEVEL: return None
     _bump("dist_ok")
+
     gap = abs(l2-l1)/l1
-    if l1_tf_w < 2:
-        max_gap = GAP_TOP_COIN if base_asset(symbol) in TOP_COINS else GAP_ALTCOIN
+    if l1_tf_w<2:
+        base = info.get("base") or symbol.split("_")[0]
+        max_gap = GAP_TOP_COIN if base in TOP_COINS else GAP_ALTCOIN
         if gap>max_gap: return None
     _bump("gap_ok")
+
     consol = find_consolidation(k1, side, geo_nearest)
     if not consol: return None
     _bump("breakout_alerta")
+
     swept     = check_prior_sweep(k1, l1, side)
     formation = "F2_sweep" if swept else "F1_breakout"
+
     entry = float(price)
     sl    = round(entry*(1-SL_PCT) if side=="LONG" else entry*(1+SL_PCT), 10)
     tp    = round(l1, 10)
-    now          = dt.datetime.now(dt.timezone.utc)
-    tv_sym       = base_asset(symbol)+"USDT.P"
+
+    now = dt.datetime.now(dt.timezone.utc)
+    base = info.get("base") or symbol.split("_")[0]
+    # TradingView link segun exchange
+    if exchange=="BYBIT":
+        tv_sym    = symbol+".P"
+        tv_prefix = "BYBIT"
+    else:
+        tv_sym    = base+"USDT.P"
+        tv_prefix = "MEXC"
+    tv_link = f"https://www.tradingview.com/chart/?symbol={tv_prefix}%3A{tv_sym}&interval=5"
     vol_millions = round((info.get("vol_global") or 0)/1_000_000, 0)
+
     return {
         "id":                f"{symbol}_{int(now.timestamp())}",
         "symbol":            symbol,
+        "exchange":          exchange,
         "direction":         side,
         "entry_price":       entry,
         "sl":                sl,
@@ -369,10 +461,9 @@ def evaluate(symbol, side, info):
         "consol_range_pct":  consol["range_pct"],
         "ch24":              info.get("ch24"),
         "ch7":               info.get("ch7"),
-        "lvl1_name":         "TFZ_breakout",
         "change_pct":        info.get("ch24"),
         "vol_ratio":         vol_millions,
-        "tv_link":           f"https://www.tradingview.com/chart/?symbol=MEXC%3A{tv_sym}&interval=5",
+        "tv_link":           tv_link,
         "timestamp":         now.isoformat(),
         "created_ts":        int(now.timestamp()),
         "status":            "OPEN",
@@ -391,9 +482,12 @@ def save_log(log):
 
 def recently_alerted(log, symbol, side):
     cutoff = time.time()-COOLDOWN_MIN*60
+    # Dedup por base asset + side (cubre mismo coin en distintos exchanges)
+    base = symbol.split("_")[0] if "_" in symbol else symbol[:-4]
     for a in reversed(log):
-        if a.get("symbol")==symbol and a.get("direction")==side:
-            if (a.get("created_ts") or 0) >= cutoff: return True
+        a_base = a.get("symbol","").split("_")[0] if "_" in a.get("symbol","") else a.get("symbol","")[:-4]
+        if a_base==base and a.get("direction")==side:
+            if (a.get("created_ts") or 0)>=cutoff: return True
     return False
 
 def send_telegram(text):
@@ -413,8 +507,9 @@ def format_alert(a):
     levels    = " / ".join(f"{x:g}" for x in a["levels"])
     tf_tag    = f"[{a.get('l1_tf','?')} {a.get('l1_touches','?')}t] " if a.get('l1_tf') else ""
     sweep_tag = " ⚡sweep" if a.get("formation")=="F2_sweep" else ""
+    exch_tag  = f"[{a.get('exchange','?')}] "
     return (
-        f"<b>{arrow} {a['symbol']}</b> (TFZ{sweep_tag})\n"
+        f"<b>{arrow} {a['symbol']}</b> {exch_tag}(TFZ{sweep_tag})\n"
         f"Entrada: <b>{a['entry_price']:g}</b>\n"
         f"SL: {a['sl']:g} (2%) TP: {a['tp']:g} ({round(abs(a['tp']-a['entry_price'])/a['entry_price']*100,2)}%) x{a['leverage']}\n"
         f"Niveles objetivo: {tf_tag}{levels} (gap {a['level_gap_pct']}%)\n"
@@ -430,26 +525,32 @@ def format_alert(a):
 # ---- Main ----------------------------------------------------------------- #
 def main():
     print(f"[{dt.datetime.utcnow().isoformat()}] TFZ-scanner inicio")
-    tickers = get_tickers()
-    if not tickers: print("[ERROR] No se pudieron obtener tickers."); return
+
+    mexc_tickers  = get_mexc_tickers()
+    bybit_tickers = get_bybit_tickers()
+    print(f"Tickers: MEXC={len(mexc_tickers)} Bybit={len(bybit_tickers)}")
+
     gmarket = get_global_market()
     if not gmarket:
-        print("[WARN] CoinGecko no disponible este ciclo; sin candidatos.")
-    else:
-        print(f"CoinGecko: {len(gmarket)} monedas con volumen global cargadas.")
-    candidates = select_candidates(tickers, gmarket)
+        print("[WARN] CoinGecko no disponible; sin candidatos.")
+        return
+    print(f"CoinGecko: {len(gmarket)} monedas cargadas.")
+
+    candidates = select_candidates(mexc_tickers, bybit_tickers, gmarket)
     print(f"Candidatos tras seleccion: {len(candidates)}")
+
     log = load_log(); new_alerts = 0
-    for sym, side, info in candidates:
+    for sym, side, info, exchange in candidates:
         if recently_alerted(log, sym, side): continue
-        try:   alert = evaluate(sym, side, info)
+        try:   alert = evaluate(sym, side, info, exchange)
         except Exception as e:
-            print(f"[WARN] {sym} error: {e}"); alert = None
+            print(f"[WARN] {sym} ({exchange}) error: {e}"); alert = None
         if not alert: continue
         send_telegram(format_alert(alert))
-        log.append(alert); new_alerts += 1
-        print(f" ALERTA {side} {sym} @ {alert['entry_price']}  [{alert['formation']}]")
+        log.append(alert); new_alerts+=1
+        print(f" ALERTA {side} {sym} [{exchange}] @ {alert['entry_price']}  [{alert['formation']}]")
         time.sleep(0.3)
+
     save_log(log)
     if DIAG:
         print("---- Embudo de diagnostico ----")
@@ -459,7 +560,7 @@ def main():
         print(f" tradeables (no Anexo3)... {FUNNEL['tradeable']}")
         print(f" con >=1 nivel............ {FUNNEL['con_niveles']}")
         print(f" con 2 niveles direccion.. {FUNNEL['2_niveles_direccion']}")
-        print(f" nivel a <{MAX_DIST_TO_LEVEL*100:g}% del precio. {FUNNEL['dist_ok']}")
+        print(f" nivel a <{MAX_DIST_TO_LEVEL*100:g}% del precio.. {FUNNEL['dist_ok']}")
         print(f" niveles cercanos (gap)... {FUNNEL['gap_ok']}")
         print(f" breakout -> ALERTA....... {FUNNEL['breakout_alerta']}")
         print("-------------------------------")
