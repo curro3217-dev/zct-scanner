@@ -65,7 +65,7 @@ STABLES = {
     "USD1", "USDG", "USDCV", "RUSD", "USDS",
     "FDUSD", "TUSD", "BUSD", "GUSD", "SUSD",
 }
-MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.05)
+MAX_DIST_TO_LEVEL = _envf("MAX_DIST_TO_LEVEL", 0.15)
 MIN_DIST_TO_LEVEL = _envf("MIN_DIST_TO_LEVEL", 0.01)  # 1% minimo al nivel
 HTF_PIVOT_K     = _envi("HTF_PIVOT_K",     3)     # pivots mas estrictos en TF altos
 HTF_MIN_TOUCHES = _envi("HTF_MIN_TOUCHES",  1)     # 1 toque basta en 1h/4h
