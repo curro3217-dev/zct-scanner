@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 TFZ-SCANNER — scanner intradia perpetuos USDT. Exchanges: MEXC + Bybit.
-Volumen/movimiento: CoinGecko. Klines: exchange nativo del perpetuo.
+Volumen/movimiento: Binance Futures. Klines: exchange nativo del perpetuo.
 """
 import os, json, time, math, datetime as dt
 from urllib import request as urlrequest
@@ -25,8 +25,7 @@ DIAG       = _envb("DIAG", True)
 
 MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)
 MIN_MOVE_PCT      = _envf("MIN_MOVE_PCT", 10.0)
-COINGECKO_PAGES   = _envi("COINGECKO_PAGES", 2)
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
+BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
 PRICE_TOL  = _envf("PRICE_TOL", 0.10)
 VERIFY_LOG = _envb("VERIFY_LOG", True)
 
@@ -116,27 +115,26 @@ def get_bybit_tickers():
     if not d or d.get("retCode") != 0: return []
     return d.get("result",{}).get("list",[])
 
-# ---- CoinGecko ------------------------------------------------------------ #
-def get_global_market():
-    key_param = f"&x_cg_demo_api_key={COINGECKO_API_KEY}" if COINGECKO_API_KEY else ""
+# ---- Binance Futures (volumen y movimiento 24h) -------------------------- #
+def get_binance_tickers():
+    """
+    Tickers de futuros USDT de Binance. Fuente de volumen y movimiento 24h.
+    Devuelve {BASE: {vol, ch24, price}} o {} si falla.
+    """
+    data = _get_raw(f"{BINANCE_FAPI}/ticker/24hr")
+    if not isinstance(data, list) or not data: return {}
     out = {}
-    for page in range(1, COINGECKO_PAGES+1):
-        url = ("https://api.coingecko.com/api/v3/coins/markets"
-               "?vs_currency=usd&order=volume_desc&per_page=250"
-               f"&page={page}&price_change_percentage=24h,7d{key_param}")
-        data = _get_raw(url)
-        if not isinstance(data,list) or not data: break
-        for c in data:
-            sym = (c.get("symbol") or "").upper()
-            if not sym or sym in out: continue
-            out[sym] = {
-                "vol":   c.get("total_volume") or 0.0,
-                "ch24":  c.get("price_change_percentage_24h"),
-                "ch7":   c.get("price_change_percentage_7d_in_currency"),
-                "price": c.get("current_price"),
-                "name":  c.get("name"),
-            }
-        time.sleep(1.5)
+    for t in data:
+        sym = t.get("symbol","")
+        if not sym.endswith("USDT"): continue
+        base = sym[:-4]
+        if not base: continue
+        try:
+            vol   = float(t.get("quoteVolume") or 0)
+            ch24  = float(t.get("priceChangePercent") or 0)
+            price = float(t.get("lastPrice") or 0)
+        except (ValueError, TypeError): continue
+        out[base] = {"vol": vol, "ch24": ch24, "price": price}
     return out
 
 # ---- Klines --------------------------------------------------------------- #
@@ -180,13 +178,13 @@ def base_asset(symbol, exchange="MEXC"):
         return symbol[:-4] if symbol.endswith("USDT") else symbol
     return symbol.split("_")[0]
 
-def select_candidates(mexc_tickers, bybit_tickers, gmarket):
+def select_candidates(mexc_tickers, bybit_tickers, bmarket):
     """
-    Cruza MEXC + Bybit con CoinGecko. Cada base se evalua solo una vez
+    Cruza MEXC + Bybit con Binance Futures. Cada base se evalua solo una vez
     (MEXC tiene prioridad; Bybit añade las que no estan en MEXC).
     Devuelve lista de (symbol, side, info, exchange).
     """
-    if not gmarket: return []
+    if not bmarket: return []
     out  = []
     seen = set()  # bases ya procesadas
 
@@ -196,7 +194,7 @@ def select_candidates(mexc_tickers, bybit_tickers, gmarket):
         if not sym.endswith("_USDT"): continue
         base = sym.split("_")[0]
         if base in STABLES or base in seen: continue
-        g = gmarket.get(base.upper())
+        g = bmarket.get(base.upper())
         if not g or (g.get("vol") or 0) < MIN_VOLUME_GLOBAL: continue
         ch24 = g.get("ch24")
         if ch24 is None: continue
@@ -207,13 +205,12 @@ def select_candidates(mexc_tickers, bybit_tickers, gmarket):
         if mexc_price and cg_price and abs(cg_price-mexc_price)/mexc_price > PRICE_TOL:
             print(f"[COLISION] {sym}: MEXC={mexc_price:g} CG('{g.get('name')}')={cg_price:g} -> descartada")
             continue
-        ch7 = g.get("ch7") or 0.0
         if VERIFY_LOG:
             print(f"[FUENTE:MEXC] {sym}: {mexc_price:g} ch24={ch24:+.1f}% vol=${(g.get('vol') or 0)/1e6:.0f}M -> {side}")
         seen.add(base)
         out.append((sym, side,
                     {"last":mexc_price,"vol_global":g.get("vol") or 0.0,
-                     "ch24":round(ch24,2),"ch7":round(ch7,2),"base":base},
+                     "ch24":round(ch24,2),"ch7":0.0,"base":base},
                     "MEXC"))
 
     # --- Bybit (solo monedas nuevas no cubiertas por MEXC) ---
@@ -222,7 +219,7 @@ def select_candidates(mexc_tickers, bybit_tickers, gmarket):
         if not sym.endswith("USDT"): continue
         base = sym[:-4]
         if base in STABLES or base in seen: continue
-        g = gmarket.get(base.upper())
+        g = bmarket.get(base.upper())
         if not g or (g.get("vol") or 0) < MIN_VOLUME_GLOBAL: continue
         ch24 = g.get("ch24")
         if ch24 is None: continue
@@ -234,13 +231,12 @@ def select_candidates(mexc_tickers, bybit_tickers, gmarket):
         if bybit_price and cg_price and abs(cg_price-bybit_price)/bybit_price > PRICE_TOL:
             print(f"[COLISION] {sym}: BYBIT={bybit_price:g} CG('{g.get('name')}')={cg_price:g} -> descartada")
             continue
-        ch7 = g.get("ch7") or 0.0
         if VERIFY_LOG:
             print(f"[FUENTE:BYBIT] {sym}: {bybit_price:g} ch24={ch24:+.1f}% vol=${(g.get('vol') or 0)/1e6:.0f}M -> {side}")
         seen.add(base)
         out.append((sym, side,
                     {"last":bybit_price,"vol_global":g.get("vol") or 0.0,
-                     "ch24":round(ch24,2),"ch7":round(ch7,2),"base":base},
+                     "ch24":round(ch24,2),"ch7":0.0,"base":base},
                     "BYBIT"))
     return out
 
@@ -530,13 +526,13 @@ def main():
     bybit_tickers = get_bybit_tickers()
     print(f"Tickers: MEXC={len(mexc_tickers)} Bybit={len(bybit_tickers)}")
 
-    gmarket = get_global_market()
-    if not gmarket:
-        print("[WARN] CoinGecko no disponible; sin candidatos.")
+    bmarket = get_binance_tickers()
+    if not bmarket:
+        print("[WARN] Binance Futures no disponible; sin candidatos.")
         return
-    print(f"CoinGecko: {len(gmarket)} monedas cargadas.")
+    print(f"Binance: {len(bmarket)} perpetuos USDT cargados.")
 
-    candidates = select_candidates(mexc_tickers, bybit_tickers, gmarket)
+    candidates = select_candidates(mexc_tickers, bybit_tickers, bmarket)
     print(f"Candidatos tras seleccion: {len(candidates)}")
 
     log = load_log(); new_alerts = 0
