@@ -1,11 +1,9 @@
 name: Deploy Bybit Proxy Worker
-
 on:
   workflow_dispatch:
   push:
     paths:
       - 'worker.js'
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -18,3 +16,10 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.CF_TOKEN }}" \
             -H "Content-Type: application/javascript" \
             --data-binary @worker.js
+      - name: Enable Smart Placement
+        run: |
+          curl -s -X PATCH \
+            "https://api.cloudflare.com/client/v4/accounts/6c54770f3c48991d318f49027e0a3b03/workers/scripts/bybit-proxy/settings" \
+            -H "Authorization: Bearer ${{ secrets.CF_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data '{"placement":{"mode":"smart"}}'
