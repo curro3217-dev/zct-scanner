@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ Backtester — Trading From Zero
+TFZ Backtester â Trading From Zero
 ==================================
 Replica la logica del scanner (main.py) sobre historico de 15m.
 Seleccion intraday: movimiento >= 10% en 24h (el 7d ya no filtra).
@@ -21,13 +21,13 @@ from datetime import datetime, timezone
 import requests
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  CONFIG  (mismos umbrales que main.py)
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 MIN_VOLUME_GLOBAL = 100_000_000  # $100M volumen global 24h (CoinGecko)
 MIN_MOVE_PCT      = 10.0         # movimiento minimo 24h (intraday; el 7d ya no filtra)
-SL_PCT            = 0.02         # 2%
-TP_PCT            = 0.06         # 6%  (RR 1:3)
+SL_PCT            = 0.015        # 1.5%
+TP_PCT            = 0.04         # 4%  (RR 1:2.67)
 PIVOT_K          = 2
 LEVEL_TOL_PCT    = 0.006
 MIN_TOUCHES      = 2
@@ -54,7 +54,7 @@ LEVEL_WINDOW     = 200          # velas usadas para detectar niveles (= limit li
 CHANGE_LB        = 96           # 96 velas de 15m = 24h
 OUTCOME_CANDLES  = 32           # 8h de ventana (igual que checker.py)
 COOLDOWN_CANDLES = 8            # 2h entre setups del mismo symbol+side
-BREAKEVEN_WR     = 25.0         # con RR 1:3 necesitas > 25% de aciertos
+BREAKEVEN_WR     = 27.3         # con RR 1:2.67 necesitas > 27.3% de aciertos
 INTERVAL_MAP = {"15m": "Min15", "1h": "Min60", "4h": "Hour4", "1d": "Day1"}
 BASE = "https://contract.mexc.com/api/v1/contract"
 MAX_COINS = int(float(os.environ.get("MAX_COINS", 150)))   # aumentado de 80 a 150
@@ -68,9 +68,9 @@ FALLBACK_COINS = [
 TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "")
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  API
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def get_klines(symbol, interval, limit=2000):
     """Limite aumentado a 2000 (~21 dias en 15m) para mas muestra historica."""
     try:
@@ -118,9 +118,9 @@ def build_universe():
         log.error(f"build_universe global fallo: {e}")
     log.warning("Usando lista de respaldo (FALLBACK_COINS)")
     return FALLBACK_COINS
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  DETECCION DE NIVELES (identica a main.py)
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def base_asset(symbol):
     return symbol.split("_")[0]
 def _window(arrs, lo, hi):
@@ -202,9 +202,9 @@ def breakout_at_last(candles, side, nearest_level):
         if not (trigger["c"] < lo):
             return None
     return {"consol_high": hi, "consol_low": lo, "range_pct": round(rng_pct * 100, 2)}
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  SIMULACION
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def simulate(direction, entry, tp, sl, future_highs, future_lows, future_closes=None):
     """
     Simula el resultado de un trade.
@@ -234,9 +234,9 @@ def simulate(direction, entry, tp, sl, future_highs, future_lows, future_closes=
         final = round(((lc - entry) / entry if direction == "LONG"
                        else (entry - lc) / entry) * 100, 2)
     return "TIMEOUT", round(max_float, 2), final
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  BACKTEST POR MONEDA
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def backtest_coin(symbol):
     results = []
     d15 = get_klines(symbol, "15m", limit=2000)
@@ -345,9 +345,9 @@ def backtest_coin(symbol):
         results.append(row)
     log.info(f"{symbol}: {len(results)} setups")
     return results
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  ANALISIS
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def _wr(sub, key="outcome"):
     resolved = [r for r in sub if r[key] in ("WIN", "LOSS")]
     if not resolved:
@@ -527,9 +527,9 @@ def analyze(rows):
         "grid_summary": grid_summary, "best_grid": best_grid,
         "timeout_stats": timeout_stats,
     }
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  REPORTE TELEGRAM
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def _fmt_section(title, d):
     if not d:
         return ""
@@ -548,7 +548,7 @@ def build_report(a, n_coins):
     else:
         wr = a["wr"]
         if a["resolved"] < 20:
-            conclusion = (f"AVISO: solo {a['resolved']} operaciones resueltas — "
+            conclusion = (f"AVISO: solo {a['resolved']} operaciones resueltas â "
                           "muestra insuficiente para concluir.")
         elif wr >= 40:
             conclusion = f"FUERTE: {wr:.0f}% de aciertos (breakeven en 25%)."
@@ -560,7 +560,7 @@ def build_report(a, n_coins):
         w1, n1, p1 = a["wr_tp1_all"]
         wz, nz, pz = a["wr_tfz_all"]
         comparacion = "\n".join([
-            "=== 3 salidas — comparacion ===",
+            "=== 3 salidas â comparacion ===",
             (f"1) SL2%+TP+6%:  WR {p2:.0f}% ({w2}/{n2})  exp {a['exp_tp2']:+.2f}%  PF {_fmt_pf(a['pf_tp2'])}"),
             (f"2) SL2%+TP niv: WR {p1:.0f}% ({w1}/{n1})  exp {a['exp_tp1']:+.2f}%  PF {_fmt_pf(a['pf_tp1'])}"),
             (f"3) TFZ puro:    WR {pz:.0f}% ({wz}/{nz})  exp {a['exp_tfz']:+.2f}%  PF {_fmt_pf(a['pf_tfz'])}"),
@@ -580,7 +580,7 @@ def build_report(a, n_coins):
         # Timeout
         to = a.get("timeout_stats")
         if to:
-            to_lines = [f"=== TIMEOUT — {to['count']} de {a['total']} setups ==="]
+            to_lines = [f"=== TIMEOUT â {to['count']} de {a['total']} setups ==="]
             to_lines.append(f"  Float maximo medio: +{to['avg_max_float']}%  "
                             f"(cerca del TP: {to['near_tp']} trades)")
             if to["avg_final"] is not None:
@@ -609,7 +609,7 @@ def build_report(a, n_coins):
         else:
             grid_section = ""
         body_parts = [
-            (f"Aciertos (+6%): {wr:.0f}% — {a['wins']} ganadas / {a['losses']} perdidas / "
+            (f"Aciertos (+6%): {wr:.0f}% â {a['wins']} ganadas / {a['losses']} perdidas / "
              f"{a['resolved']} resueltas"),
             f"Timeouts (8h sin tocar TP/SL): {a['timeouts']}  |  Total setups: {a['total']}",
             conclusion,
@@ -630,9 +630,9 @@ def build_report(a, n_coins):
         ]
         body = "\n".join(x for x in body_parts if x is not None)
     parts_raw = [
-        "📊 TFZ Backtest — Trading From Zero",
+        "ð TFZ Backtest â Trading From Zero",
         f"Analizadas {n_coins} monedas en ~21 dias (velas de 15m)",
-        "Stop Loss 2% · Take Profit 6% · RR 1:3 · breakeven WR > 25%",
+        "Stop Loss 1.5% Â· Take Profit 4% Â· RR 1:2.67 Â· breakeven WR > 27%",
         "",
         body,
         "",
@@ -671,9 +671,9 @@ def send_telegram(msg):
             log.error(f"Telegram: {e}")
             print(chunk)
         time.sleep(0.5)
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  MAIN
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def main():
     log.info("=== TFZ Backtester iniciando ===")
     log.info(f"SL={SL_PCT*100:.0f}%  TP={TP_PCT*100:.0f}%  RR=1:3  "
