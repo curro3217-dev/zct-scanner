@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ-SCANNER â scanner intradia perpetuos USDT. Exchange: MEXC.
+TFZ-SCANNER Ã¢ÂÂ scanner intradia perpetuos USDT. Exchange: MEXC.
 Volumen/movimiento: Binance Futures. Klines: MEXC.
 """
 import os, json, time, math, datetime as dt
@@ -28,7 +28,7 @@ BINANCE_FAPI = "https://bybit-proxy.curro3217.workers.dev/binance/fapi/v1"
 PRICE_TOL  = _envf("PRICE_TOL", 0.10)
 VERIFY_LOG = _envb("VERIFY_LOG", True)
 
-SL_PCT   = 0.02
+SL_PCT   = 0.015
 TP_PCT   = 0.06
 LEVERAGE = 10
 
@@ -451,10 +451,10 @@ def send_telegram(text):
     except urlerror.URLError as e: print(f"[WARN] Telegram fallo: {e}")
 
 def format_alert(a):
-    arrow     = "ð¢ LONG" if a["direction"]=="LONG" else "ð´ SHORT"
+    arrow     = "Ã°ÂÂÂ¢ LONG" if a["direction"]=="LONG" else "Ã°ÂÂÂ´ SHORT"
     levels    = " / ".join(f"{x:g}" for x in a["levels"])
     tf_tag    = f"[{a.get('l1_tf','?')} {a.get('l1_touches','?')}t] " if a.get('l1_tf') else ""
-    sweep_tag = " â¡sweep" if a.get("formation")=="F2_sweep" else ""
+    sweep_tag = " Ã¢ÂÂ¡sweep" if a.get("formation")=="F2_sweep" else ""
     exch_tag  = f"[{a.get('exchange','?')}] "
     return (
         f"<b>{arrow} {a['symbol']}</b> {exch_tag}(TFZ{sweep_tag})\n"
@@ -463,11 +463,11 @@ def format_alert(a):
         f"Niveles objetivo: {tf_tag}{levels} (gap {a['level_gap_pct']}%)\n"
         f"Dist. al nivel: {a['dist_to_level_pct']}% Base: {a['consol_range_pct']}%\n"
         f"Cambio 24h: {a['ch24']}% 7d: {a['ch7']}%\n"
-        f"\nâ â Plan Omni (copiar) â â\n"
+        f"\nÃ¢ÂÂ Ã¢ÂÂ Plan Omni (copiar) Ã¢ÂÂ Ã¢ÂÂ\n"
         f"Entrada: {a['entry_price']:g}\n"
         f"SL (-2%): {a['sl']:g}\n"
         f"TP nivel: {a['tp']:g} ({round(abs(a['tp']-a['entry_price'])/a['entry_price']*100,2)}%)\n"
-        f"<a href=\"{a['tv_link']}\">ð Grafico 5m (TradingView)</a>"
+        f"<a href=\"{a['tv_link']}\">Ã°ÂÂÂ Grafico 5m (TradingView)</a>"
     )
 
 # ---- Main ----------------------------------------------------------------- #
