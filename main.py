@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ-SCANNER — scanner intradia perpetuos USDT. Exchange: MEXC.
+TFZ-SCANNER â scanner intradia perpetuos USDT. Exchange: MEXC.
 Volumen/movimiento: Binance Futures. Klines: MEXC.
 """
 import os, json, time, math, datetime as dt
@@ -61,7 +61,7 @@ SWEEP_TOL_PCT  = _envf("SWEEP_TOL_PCT",  0.005)
 CONSOL_LOOKBACK  = _envi("CONSOL_LOOKBACK",  10)
 CONSOL_MAX_RANGE = _envf("CONSOL_MAX_RANGE", 0.030)
 CONSOL_TO_LEVEL  = _envf("CONSOL_TO_LEVEL",  0.030)
-BREAKOUT_BARS    = _envi("BREAKOUT_BARS",    2)
+BREAKOUT_BARS    = _envi("BREAKOUT_BARS",    4)
 MAX_EXTENSION    = _envf("MAX_EXTENSION",    0.030)
 
 WICK_LOOKBACK    = 30
@@ -451,10 +451,10 @@ def send_telegram(text):
     except urlerror.URLError as e: print(f"[WARN] Telegram fallo: {e}")
 
 def format_alert(a):
-    arrow     = "🟢 LONG" if a["direction"]=="LONG" else "🔴 SHORT"
+    arrow     = "ð¢ LONG" if a["direction"]=="LONG" else "ð´ SHORT"
     levels    = " / ".join(f"{x:g}" for x in a["levels"])
     tf_tag    = f"[{a.get('l1_tf','?')} {a.get('l1_touches','?')}t] " if a.get('l1_tf') else ""
-    sweep_tag = " ⚡sweep" if a.get("formation")=="F2_sweep" else ""
+    sweep_tag = " â¡sweep" if a.get("formation")=="F2_sweep" else ""
     exch_tag  = f"[{a.get('exchange','?')}] "
     return (
         f"<b>{arrow} {a['symbol']}</b> {exch_tag}(TFZ{sweep_tag})\n"
@@ -463,11 +463,11 @@ def format_alert(a):
         f"Niveles objetivo: {tf_tag}{levels} (gap {a['level_gap_pct']}%)\n"
         f"Dist. al nivel: {a['dist_to_level_pct']}% Base: {a['consol_range_pct']}%\n"
         f"Cambio 24h: {a['ch24']}% 7d: {a['ch7']}%\n"
-        f"\n— — Plan Omni (copiar) — —\n"
+        f"\nâ â Plan Omni (copiar) â â\n"
         f"Entrada: {a['entry_price']:g}\n"
         f"SL (-2%): {a['sl']:g}\n"
         f"TP nivel: {a['tp']:g} ({round(abs(a['tp']-a['entry_price'])/a['entry_price']*100,2)}%)\n"
-        f"<a href=\"{a['tv_link']}\">📈 Grafico 5m (TradingView)</a>"
+        f"<a href=\"{a['tv_link']}\">ð Grafico 5m (TradingView)</a>"
     )
 
 # ---- Main ----------------------------------------------------------------- #
