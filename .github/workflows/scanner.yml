@@ -1,9 +1,7 @@
 name: ZCT Scanner
 
 on:
-  schedule:
-    - cron: '0 * * * *'      # cada hora
-  workflow_dispatch:          # también se puede lanzar a mano desde GitHub
+  workflow_dispatch:          # lanzado por cron-job.org cada hora
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -11,9 +9,9 @@ env:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 58       # se mata antes de que llegue el siguiente ciclo
+    timeout-minutes: 58
     permissions:
-      contents: write         # necesario para hacer push de alerts_log.json
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +25,7 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Ejecutar scanner en bucle (55 min)
+      - name: Loop de scans (cada minuto, 55 veces)
         env:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -35,17 +33,17 @@ jobs:
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          END=$((SECONDS + 3300))
-          while [ $SECONDS -lt $END ]; do
-            INICIO=$SECONDS
+
+          for i in $(seq 1 55); do
+            echo "=== Scan $i/55 ==="
             python main.py
+
             git add alerts_log.json
             if ! git diff --cached --quiet; then
-              git pull --rebase origin main
               git commit -m "chore: actualizar alerts_log [skip ci]"
+              git pull --rebase origin main
               git push
             fi
-            ELAPSED=$((SECONDS - INICIO))
-            REST=$((300 - ELAPSED))
-            [ $REST -gt 0 ] && sleep $REST
+
+            [ $i -lt 55 ] && sleep 60
           done
