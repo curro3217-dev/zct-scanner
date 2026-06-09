@@ -698,5 +698,35 @@
     "created_ts": 1780853862,
     "status": "LOSS",
     "resolved_at": "2026-06-08T12:38:57.757609+00:00"
+  },
+  {
+    "id": "SIREN_USDT_1781048680",
+    "symbol": "SIREN_USDT",
+    "exchange": "MEXC",
+    "direction": "SHORT",
+    "entry_price": 0.9047,
+    "sl": 0.9182705,
+    "tp": 0.868512,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_F1_breakout",
+    "formation": "F1_breakout",
+    "levels": [
+      0.8903322034,
+      0.8845
+    ],
+    "l1_tf": "diag",
+    "l1_touches": 4,
+    "level_gap_pct": 0.66,
+    "dist_to_level_pct": 1.59,
+    "consol_range_pct": 2.15,
+    "ch24": -23.18,
+    "ch7": 0.0,
+    "change_pct": -23.18,
+    "vol_ratio": 140.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ASIRENUSDT.P&interval=5",
+    "timestamp": "2026-06-09T23:44:40.883355+00:00",
+    "created_ts": 1781048680,
+    "status": "OPEN"
   }
 ]
