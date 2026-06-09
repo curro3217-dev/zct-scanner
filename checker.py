@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ Checker — Verificacion automatica de resultados del scanner.
+TFZ Checker â Verificacion automatica de resultados del scanner.
 Como funciona:
   1. Lee alerts_log.json (creado por main.py con cada alerta).
   2. Para cada alerta OPEN, descarga las velas 15m posteriores al momento
@@ -29,9 +29,9 @@ INTERVAL_MAP = {
     '1m': 'Min1', '15m': 'Min15', '1h': 'Min60',
     '4h': 'Hour4', '1d': 'Day1',
 }
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  TELEGRAM
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def send_telegram(msg: str):
     """Envia mensaje dividiendolo si supera 4000 caracteres."""
     chunks = []
@@ -63,9 +63,9 @@ def send_telegram(msg: str):
         except Exception as e:
             log.error(f'Telegram exception: {e}')
         time.sleep(0.4)
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  MEXC API
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def get_klines(symbol: str, interval: str, limit: int = 200):
     """Descarga velas OHLCV de MEXC futuros, con timestamps."""
     try:
@@ -92,9 +92,9 @@ def get_klines(symbol: str, interval: str, limit: int = 200):
     except Exception as e:
         log.error(f'{symbol} klines error: {e}')
         return None
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  EVALUACION DE TRADE
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def check_outcome(alert: dict):
     """
     Devuelve 'WIN', 'LOSS', 'TIMEOUT' o None si aun no hay veredicto.
@@ -132,13 +132,13 @@ def check_outcome(alert: dict):
     if hours_elapsed >= EVAL_HOURS:
         return 'TIMEOUT'
     return None
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  ESTADISTICAS
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def generate_stats(records: list) -> str:
     total = len(records)
     if total == 0:
-        return '📊 TFZ Scanner — sin alertas registradas aun.'
+        return 'ð TFZ Scanner â sin alertas registradas aun.'
     wins     = sum(1 for r in records if r['status'] == 'WIN')
     losses   = sum(1 for r in records if r['status'] == 'LOSS')
     timeouts = sum(1 for r in records if r['status'] == 'TIMEOUT')
@@ -197,10 +197,10 @@ def generate_stats(records: list) -> str:
             by_level[lvl]['wins'] += 1
     # --- Mensaje ---------------------------------------------------------- #
     lines = [
-        '📊 <b>TFZ Scanner — Resultados acumulados</b>\n',
+        'ð <b>TFZ Scanner â Resultados acumulados</b>\n',
         f'Total alertas: {total}',
-        (f'✅ Ganadas: {wins}  ❌ Perdidas: {losses}  '
-         f'⏱ Timeout: {timeouts}  🟡 Abiertas: {open_n}'),
+        (f'â Ganadas: {wins}  â Perdidas: {losses}  '
+         f'â± Timeout: {timeouts}  ð¡ Abiertas: {open_n}'),
         f'<b>Win rate: {wr:.0f}%</b> ({wins}/{resolved} resueltas)\n',
     ]
     # PF y Expectancia
@@ -235,27 +235,37 @@ def generate_stats(records: list) -> str:
     if recent:
         lines.append('Ultimos resultados:')
         for r in recent:
-            icon = {'WIN': '✅', 'LOSS': '❌', 'TIMEOUT': '⏱'}.get(r['status'], '?')
+            icon = {'WIN': 'â', 'LOSS': 'â', 'TIMEOUT': 'â±'}.get(r['status'], '?')
             ts   = r['timestamp'][:16].replace('T', ' ')
-            chg  = r.get('change_pct', 0) or 0
-            chg_str = f'+{chg:.1f}%' if chg > 0 else f'{chg:.1f}%'
+            entry_p = r.get('entry_price', 0) or 0
+            tp_p    = r.get('tp', 0) or 0
+            sl_p    = r.get('sl', 0) or 0
+            dirn    = r.get('direction', 'LONG')
+            if r['status'] == 'WIN' and entry_p and tp_p:
+                _pnl = (tp_p - entry_p) / entry_p * 100 if dirn == 'LONG' else (entry_p - tp_p) / entry_p * 100
+                chg_str = f'+{_pnl:.1f}%'
+            elif r['status'] == 'LOSS' and entry_p and sl_p:
+                _pnl = (sl_p - entry_p) / entry_p * 100 if dirn == 'LONG' else (entry_p - sl_p) / entry_p * 100
+                chg_str = f'{_pnl:.1f}%'
+            else:
+                chg_str = 'timeout'
             lines.append(
                 f'  {icon} {r["symbol"]} {r["direction"]} '
-                f'({chg_str}) — {ts}'
+                f'({chg_str}) â {ts}'
             )
     return '\n'.join(lines)
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 #  MAIN
-# ══════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def main():
     log.info('=== TFZ Checker iniciado ===')
     if not ALERTS_LOG.exists():
-        log.info('No hay alerts_log.json — nada que comprobar')
+        log.info('No hay alerts_log.json â nada que comprobar')
         return
     with open(ALERTS_LOG, encoding='utf-8') as f:
         records = json.load(f)
     if not records:
-        log.info('alerts_log.json vacio — nada que comprobar')
+        log.info('alerts_log.json vacio â nada que comprobar')
         return
     open_alerts = [r for r in records if r['status'] == 'OPEN']
     log.info(f'Alertas abiertas: {len(open_alerts)} / Total: {len(records)}')
@@ -266,10 +276,10 @@ def main():
             if outcome:
                 alert['status']       = outcome
                 alert['resolved_at']  = datetime.now(timezone.utc).isoformat()
-                log.info(f'{alert["symbol"]} {alert["direction"]} → {outcome}')
+                log.info(f'{alert["symbol"]} {alert["direction"]} â {outcome}')
                 updated += 1
             else:
-                log.info(f'{alert["symbol"]} {alert["direction"]} → sigue OPEN')
+                log.info(f'{alert["symbol"]} {alert["direction"]} â sigue OPEN')
         except Exception as e:
             log.error(f'Error evaluando {alert.get("id")}: {e}')
         time.sleep(0.4)
