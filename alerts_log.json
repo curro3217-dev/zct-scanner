@@ -788,5 +788,35 @@
     "timestamp": "2026-06-10T09:10:21.410429+00:00",
     "created_ts": 1781082621,
     "status": "OPEN"
+  },
+  {
+    "id": "SOXL_USDT_1781087447",
+    "symbol": "SOXL_USDT",
+    "exchange": "MEXC",
+    "direction": "SHORT",
+    "entry_price": 185.24,
+    "sl": 188.0186,
+    "tp": 177.8304,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_F2_sweep",
+    "formation": "F2_sweep",
+    "levels": [
+      182.716097561,
+      184.295
+    ],
+    "l1_tf": "diag",
+    "l1_touches": 3,
+    "level_gap_pct": 0.86,
+    "dist_to_level_pct": 1.36,
+    "consol_range_pct": 2.25,
+    "ch24": -18.11,
+    "ch7": 0.0,
+    "change_pct": -18.11,
+    "vol_ratio": 967.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3ASOXLUSDT.P&interval=5",
+    "timestamp": "2026-06-10T10:30:47.191247+00:00",
+    "created_ts": 1781087447,
+    "status": "OPEN"
   }
 ]
