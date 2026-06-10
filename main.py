@@ -4,7 +4,12 @@
 TFZ-SCANNER — scanner intradia perpetuos USDT. Exchange: MEXC.
 Volumen/movimiento: Binance Futures. Klines: MEXC.
 """
-import os, json, time, math, datetime as dt
+import os, json, time, math, sys, datetime as dt
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 from urllib import request as urlrequest
 from urllib import error as urlerror
 
@@ -447,8 +452,16 @@ def send_telegram(text):
     payload = json.dumps({"chat_id":chat,"text":text,
                           "parse_mode":"HTML","disable_web_page_preview":True}).encode()
     req = urlrequest.Request(url, data=payload, headers={"Content-Type":"application/json"})
-    try: urlrequest.urlopen(req, timeout=15)
-    except urlerror.URLError as e: print(f"[WARN] Telegram fallo: {e}")
+    try:
+        with urlrequest.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode("utf-8", "replace")
+            print(f"[TG] status={resp.status} resp={body[:200]}")
+    except urlerror.URLError as e:
+        print(f"[WARN] Telegram fallo: {e}")
+        err_body = getattr(e, "read", None)
+        if err_body:
+            try: print(f"[WARN] Telegram body: {err_body().decode('utf-8','replace')[:300]}")
+            except Exception: pass
 
 def format_alert(a):
     arrow     = "🟢 LONG" if a["direction"]=="LONG" else "🔴 SHORT"
@@ -496,7 +509,7 @@ def main():
         send_telegram(format_alert(alert))
         log.append(alert); new_alerts+=1
         print(f" ALERTA {side} {sym} [{exchange}] @ {alert['entry_price']}  [{alert['formation']}]")
-        time.sleep(0.3)
+        time.sleep(1.2)
 
     save_log(log)
     if DIAG:
