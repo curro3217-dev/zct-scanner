@@ -758,5 +758,35 @@
     "timestamp": "2026-06-10T06:18:33.712551+00:00",
     "created_ts": 1781072313,
     "status": "OPEN"
+  },
+  {
+    "id": "HOME_USDT_1781082621",
+    "symbol": "HOME_USDT",
+    "exchange": "MEXC",
+    "direction": "LONG",
+    "entry_price": 0.02944,
+    "sl": 0.0289984,
+    "tp": 0.0306176,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_F2_sweep",
+    "formation": "F2_sweep",
+    "levels": [
+      0.0297693878,
+      0.0296389781
+    ],
+    "l1_tf": "diag",
+    "l1_touches": 6,
+    "level_gap_pct": 0.44,
+    "dist_to_level_pct": 1.12,
+    "consol_range_pct": 1.78,
+    "ch24": 14.25,
+    "ch7": 0.0,
+    "change_pct": 14.25,
+    "vol_ratio": 126.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AHOMEUSDT.P&interval=5",
+    "timestamp": "2026-06-10T09:10:21.410429+00:00",
+    "created_ts": 1781082621,
+    "status": "OPEN"
   }
 ]
