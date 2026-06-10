@@ -728,5 +728,35 @@
     "timestamp": "2026-06-09T23:44:40.883355+00:00",
     "created_ts": 1781048680,
     "status": "OPEN"
+  },
+  {
+    "id": "ALLO_USDT_1781072313",
+    "symbol": "ALLO_USDT",
+    "exchange": "MEXC",
+    "direction": "SHORT",
+    "entry_price": 0.3917,
+    "sl": 0.3975755,
+    "tp": 0.376032,
+    "leverage": 10,
+    "timeframe": "5m",
+    "setup": "TFZ_F2_sweep",
+    "formation": "F2_sweep",
+    "levels": [
+      0.3875621429,
+      0.3889240964
+    ],
+    "l1_tf": "diag",
+    "l1_touches": 6,
+    "level_gap_pct": 0.35,
+    "dist_to_level_pct": 1.06,
+    "consol_range_pct": 2.44,
+    "ch24": -15.06,
+    "ch7": 0.0,
+    "change_pct": -15.06,
+    "vol_ratio": 234.0,
+    "tv_link": "https://www.tradingview.com/chart/?symbol=MEXC%3AALLOUSDT.P&interval=5",
+    "timestamp": "2026-06-10T06:18:33.712551+00:00",
+    "created_ts": 1781072313,
+    "status": "OPEN"
   }
 ]
