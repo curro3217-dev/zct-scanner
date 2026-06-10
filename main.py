@@ -36,6 +36,7 @@ VERIFY_LOG = _envb("VERIFY_LOG", True)
 SL_PCT   = 0.015
 TP_PCT   = 0.04
 LEVERAGE = 10
+RISK_PCT = 0.01  # arriesgar el 1% de la cuenta por operacion
 
 PIVOT_K       = _envi("PIVOT_K",       2)
 LEVEL_TOL_PCT = _envf("LEVEL_TOL_PCT", 0.006)
@@ -75,6 +76,7 @@ MAX_GAP_PCT      = _envf("MAX_GAP_PCT",      0.025)
 MAX_GAPS_ALLOWED = _envi("MAX_GAPS_ALLOWED", 3)
 
 ALERTS_LOG   = "alerts_log.json"
+HEARTBEAT_LOG = "heartbeat.json"
 COOLDOWN_MIN = _envi("COOLDOWN_MIN", 120)
 FUNNEL = {
     "evaluados":0,"datos_ok":0,"tradeable":0,"con_niveles":0,
@@ -433,6 +435,21 @@ def save_log(log):
     with open(ALERTS_LOG,"w",encoding="utf-8") as f:
         json.dump(log, f, ensure_ascii=False, indent=2)
 
+def record_heartbeat():
+    now = dt.datetime.now(dt.timezone.utc)
+    try:
+        if os.path.exists(HEARTBEAT_LOG):
+            with open(HEARTBEAT_LOG,"r",encoding="utf-8") as f: stamps = json.load(f)
+        else:
+            stamps = []
+    except (json.JSONDecodeError, OSError):
+        stamps = []
+    stamps.append(now.isoformat())
+    cutoff = now - dt.timedelta(hours=25)
+    stamps = [s for s in stamps if dt.datetime.fromisoformat(s) > cutoff]
+    with open(HEARTBEAT_LOG,"w",encoding="utf-8") as f:
+        json.dump(stamps, f, ensure_ascii=False, indent=2)
+
 def recently_alerted(log, symbol, side):
     cutoff = time.time()-COOLDOWN_MIN*60
     # Dedup por base asset + side (cubre mismo coin en distintos exchanges)
@@ -472,13 +489,14 @@ def format_alert(a):
     return (
         f"<b>{arrow} {a['symbol']}</b> {exch_tag}(TFZ{sweep_tag})\n"
         f"Entrada: <b>{a['entry_price']:g}</b>\n"
-        f"SL: {a['sl']:g} (2%) TP: {a['tp']:g} ({round(abs(a['tp']-a['entry_price'])/a['entry_price']*100,2)}%) x{a['leverage']}\n"
+        f"SL: {a['sl']:g} ({SL_PCT*100:.1f}%) TP: {a['tp']:g} ({round(abs(a['tp']-a['entry_price'])/a['entry_price']*100,2)}%) x{a['leverage']}\n"
+        f"Tamano sugerido (riesgo): nocional = cuenta x {RISK_PCT/SL_PCT:.2f} (arriesgas {RISK_PCT*100:.0f}% con SL {SL_PCT*100:.1f}%)\n"
         f"Niveles objetivo: {tf_tag}{levels} (gap {a['level_gap_pct']}%)\n"
         f"Dist. al nivel: {a['dist_to_level_pct']}% Base: {a['consol_range_pct']}%\n"
         f"Cambio 24h: {a['ch24']}% 7d: {a['ch7']}%\n"
         f"\n— — Plan Omni (copiar) — —\n"
         f"Entrada: {a['entry_price']:g}\n"
-        f"SL (-2%): {a['sl']:g}\n"
+        f"SL (-{SL_PCT*100:.1f}%): {a['sl']:g}\n"
         f"TP nivel: {a['tp']:g} ({round(abs(a['tp']-a['entry_price'])/a['entry_price']*100,2)}%)\n"
         f"<a href=\"{a['tv_link']}\">📈 Grafico 5m (TradingView)</a>"
     )
@@ -486,6 +504,7 @@ def format_alert(a):
 # ---- Main ----------------------------------------------------------------- #
 def main():
     print(f"[{dt.datetime.utcnow().isoformat()}] TFZ-scanner inicio")
+    record_heartbeat()
 
     mexc_tickers = get_mexc_tickers()
     print(f"Tickers: MEXC={len(mexc_tickers)}")
