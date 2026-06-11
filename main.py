@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ-SCANNER — scanner intradia perpetuos USDT. Exchange: MEXC.
-Volumen/movimiento: Binance Futures. Klines: MEXC.
+TFZ-SCANNER — scanner intradia perpetuos USDT. Datos (tickers y klines): MEXC.
 """
 import os, json, time, math, sys, datetime as dt
 
@@ -27,10 +26,8 @@ def _envb(name, default=False):
 MEXC_BASE  = "https://contract.mexc.com/api/v1/contract"
 DIAG       = _envb("DIAG", True)
 
-MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)
-MIN_MOVE_PCT      = _envf("MIN_MOVE_PCT", 10.0)
-BINANCE_FAPI = "https://bybit-proxy.curro3217.workers.dev/binance/fapi/v1"
-PRICE_TOL  = _envf("PRICE_TOL", 0.10)
+MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 20_000_000)
+MIN_MOVE_PCT = _envf("MIN_MOVE_PCT", 10.0)
 VERIFY_LOG = _envb("VERIFY_LOG", True)
 
 SL_PCT   = 0.015
@@ -114,29 +111,6 @@ def get_mexc_tickers():
     if not d or not d.get("success"): return []
     return d.get("data",[])
 
-
-# ---- Binance Futures (volumen y movimiento 24h) -------------------------- #
-def get_binance_tickers():
-    """
-    Tickers de futuros USDT de Binance. Fuente de volumen y movimiento 24h.
-    Devuelve {BASE: {vol, ch24, price}} o {} si falla.
-    """
-    data = _get_raw(f"{BINANCE_FAPI}/ticker/24hr")
-    if not isinstance(data, list) or not data: return {}
-    out = {}
-    for t in data:
-        sym = t.get("symbol","")
-        if not sym.endswith("USDT"): continue
-        base = sym[:-4]
-        if not base: continue
-        try:
-            vol   = float(t.get("quoteVolume") or 0)
-            ch24  = float(t.get("priceChangePercent") or 0)
-            price = float(t.get("lastPrice") or 0)
-        except (ValueError, TypeError): continue
-        out[base] = {"vol": vol, "ch24": ch24, "price": price}
-    return out
-
 # ---- Klines --------------------------------------------------------------- #
 def get_mexc_klines(symbol, interval, limit=200):
     d = _get(f"{MEXC_BASE}/kline/{symbol}?interval={interval}&limit={limit}")
@@ -158,45 +132,32 @@ def get_klines(symbol, interval, limit=200, exchange="MEXC"):
     return get_mexc_klines(symbol, interval, limit)
 
 # ---- Seleccion de monedas ------------------------------------------------- #
-def base_asset(symbol, exchange="MEXC"):
-    if exchange == "BYBIT":
-        return symbol[:-4] if symbol.endswith("USDT") else symbol
-    return symbol.split("_")[0]
-
-def select_candidates(mexc_tickers, bmarket):
+def select_candidates(mexc_tickers):
     """
-    Cruza MEXC con Binance Futures. Filtra por volumen y movimiento 24h.
-    Devuelve lista de (symbol, side, info, exchange).
+    Filtra el universo MEXC por volumen y movimiento 24h (datos propios de MEXC,
+    sin dependencias externas). Devuelve lista de (symbol, side, info, exchange).
     """
-    if not bmarket: return []
-    out  = []
-    seen = set()  # bases ya procesadas
-
-    # --- MEXC ---
+    out = []
     for tk in mexc_tickers:
         sym = tk.get("symbol","")
         if not sym.endswith("_USDT"): continue
         base = sym.split("_")[0]
-        if base in STABLES or base in seen: continue
-        g = bmarket.get(base.upper())
-        if not g or (g.get("vol") or 0) < MIN_VOLUME_GLOBAL: continue
-        ch24 = g.get("ch24")
-        if ch24 is None: continue
-        if   ch24 >= MIN_MOVE_PCT:  side = "LONG"
+        if base in STABLES: continue
+        try:
+            vol = float(tk.get("amount24") or 0)
+            ch24 = float(tk.get("riseFallRate") or 0) * 100
+            price = float(tk.get("lastPrice") or 0)
+        except (ValueError, TypeError): continue
+        if vol < MIN_VOLUME_GLOBAL: continue
+        if ch24 >= MIN_MOVE_PCT: side = "LONG"
         elif ch24 <= -MIN_MOVE_PCT: side = "SHORT"
         else: continue
-        mexc_price = tk.get("lastPrice"); cg_price = g.get("price")
-        if mexc_price and cg_price and abs(cg_price-mexc_price)/mexc_price > PRICE_TOL:
-            print(f"[COLISION] {sym}: MEXC={mexc_price:g} CG('{g.get('name')}')={cg_price:g} -> descartada")
-            continue
         if VERIFY_LOG:
-            print(f"[FUENTE:MEXC] {sym}: {mexc_price:g} ch24={ch24:+.1f}% vol=${(g.get('vol') or 0)/1e6:.0f}M -> {side}")
-        seen.add(base)
+            print(f"[FUENTE:MEXC] {sym}: {price:g} ch24={ch24:+.1f}% vol=${vol/1e6:.0f}M -> {side}")
         out.append((sym, side,
-                    {"last":mexc_price,"vol_global":g.get("vol") or 0.0,
-                     "ch24":round(ch24,2),"ch7":0.0,"base":base},
-                    "MEXC"))
-
+                     {"last":price,"vol_global":vol,
+                      "ch24":round(ch24,2),"ch7":0.0,"base":base},
+                     "MEXC"))
     return out
 
 # ---- Deteccion de niveles ------------------------------------------------- #
@@ -509,13 +470,7 @@ def main():
     mexc_tickers = get_mexc_tickers()
     print(f"Tickers: MEXC={len(mexc_tickers)}")
 
-    bmarket = get_binance_tickers()
-    if not bmarket:
-        print("[WARN] Binance Futures no disponible; sin candidatos.")
-        return
-    print(f"Binance: {len(bmarket)} perpetuos USDT cargados.")
-
-    candidates = select_candidates(mexc_tickers, bmarket)
+    candidates = select_candidates(mexc_tickers)
     print(f"Candidatos tras seleccion: {len(candidates)}")
 
     log = load_log(); new_alerts = 0
