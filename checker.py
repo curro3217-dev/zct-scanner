@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ Checker — Verificacion automatica de resultados del scanner.
+TFZ Checker v2 — Verificacion automatica de resultados del scanner.
 Como funciona:
   1. Lee alerts_log.json (creado por main.py con cada alerta).
   2. Para cada alerta OPEN, descarga las velas 15m posteriores al momento
-     en que se disparo la alerta.
+     en que se disparo la alerta — DEL EXCHANGE de la alerta (MEXC o Bybit).
   3. Recorre vela a vela: si el high supera el TP WIN, si el low
      cae bajo el SL LOSS. El primero en tocarse gana.
   4. Si han pasado mas de 8h sin tocar ninguno: TIMEOUT (trade caducado).
   5. Actualiza alerts_log.json con los resultados.
   6. Envia a Telegram un resumen de todas las alertas (win rate, PF, etc).
+
+v2: las alertas de Bybit ahora se verifican contra la API de Bybit
+    (en v1 todas iban a MEXC y las de Bybit quedaban OPEN para siempre).
+    Estadisticas nuevas: por formacion y por setup-80.
 """
 import json, os, time, logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 import requests
 log = logging.getLogger(__name__)
@@ -25,11 +29,12 @@ TELEGRAM_TOKEN   = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 ALERTS_LOG = Path(__file__).parent / 'alerts_log.json'
 EVAL_HOURS = 8   # ventana de evaluacion (igual que en el backtest)
-COST_PCT = 0.10  # coste ida y vuelta estimado: fees + funding + slippage (puntos %)
-HEARTBEAT_LOG = Path(__file__).parent / 'heartbeat.json'
-INTERVAL_MAP = {
+MEXC_INTERVAL_MAP = {
     '1m': 'Min1', '15m': 'Min15', '1h': 'Min60',
     '4h': 'Hour4', '1d': 'Day1',
+}
+BYBIT_INTERVAL_MAP = {
+    '1m': '1', '15m': '15', '1h': '60', '4h': '240', '1d': 'D',
 }
 # ══════════════════════════════════════════════════════════
 #  TELEGRAM
@@ -66,14 +71,14 @@ def send_telegram(msg: str):
             log.error(f'Telegram exception: {e}')
         time.sleep(0.4)
 # ══════════════════════════════════════════════════════════
-#  MEXC API
+#  KLINES (MEXC + BYBIT)
 # ══════════════════════════════════════════════════════════
-def get_klines(symbol: str, interval: str, limit: int = 200):
-    """Descarga velas OHLCV de MEXC futuros, con timestamps."""
+def get_mexc_klines(symbol: str, interval: str, limit: int = 200):
+    """Descarga velas OHLCV de MEXC futuros, con timestamps en segundos."""
     try:
         r = requests.get(
             f'https://contract.mexc.com/api/v1/contract/kline/{symbol}',
-            params={'interval': INTERVAL_MAP[interval], 'limit': limit},
+            params={'interval': MEXC_INTERVAL_MAP[interval], 'limit': limit},
             timeout=10,
         )
         d = r.json().get('data', {})
@@ -92,8 +97,39 @@ def get_klines(symbol: str, interval: str, limit: int = 200):
             'low':   [float(x) for x in d['low']],
         }
     except Exception as e:
-        log.error(f'{symbol} klines error: {e}')
+        log.error(f'{symbol} MEXC klines error: {e}')
         return None
+
+def get_bybit_klines(symbol: str, interval: str, limit: int = 200):
+    """Descarga velas OHLCV de Bybit linear, con timestamps en segundos."""
+    try:
+        r = requests.get(
+            'https://api.bybit.com/v5/market/kline',
+            params={'category': 'linear', 'symbol': symbol,
+                    'interval': BYBIT_INTERVAL_MAP[interval], 'limit': limit},
+            timeout=10,
+        )
+        d = r.json()
+        if d.get('retCode') != 0:
+            return None
+        rows = list(reversed(d.get('result', {}).get('list', [])))
+        if not rows:
+            return None
+        return {
+            'time':  [int(row[0]) // 1000 for row in rows],
+            'open':  [float(row[1]) for row in rows],
+            'high':  [float(row[2]) for row in rows],
+            'low':   [float(row[3]) for row in rows],
+            'close': [float(row[4]) for row in rows],
+        }
+    except Exception as e:
+        log.error(f'{symbol} Bybit klines error: {e}')
+        return None
+
+def get_klines(symbol: str, interval: str, exchange: str = 'MEXC', limit: int = 200):
+    if exchange == 'BYBIT':
+        return get_bybit_klines(symbol, interval, limit)
+    return get_mexc_klines(symbol, interval, limit)
 # ══════════════════════════════════════════════════════════
 #  EVALUACION DE TRADE
 # ══════════════════════════════════════════════════════════
@@ -102,8 +138,8 @@ def check_outcome(alert: dict):
     Devuelve 'WIN', 'LOSS', 'TIMEOUT' o None si aun no hay veredicto.
     """
     symbol    = alert['symbol']
+    exchange  = alert.get('exchange', 'MEXC')
     direction = alert['direction']
-    entry     = alert['entry_price']
     sl        = alert['sl']
     tp        = alert['tp']
     alert_dt  = datetime.fromisoformat(alert['timestamp'])
@@ -111,9 +147,9 @@ def check_outcome(alert: dict):
         alert_dt = alert_dt.replace(tzinfo=timezone.utc)
     now           = datetime.now(timezone.utc)
     hours_elapsed = (now - alert_dt).total_seconds() / 3600
-    k = get_klines(symbol, '15m', limit=200)
+    k = get_klines(symbol, '15m', exchange=exchange, limit=200)
     if not k or not k['time']:
-        log.warning(f'{symbol}: sin datos para evaluar')
+        log.warning(f'{symbol} [{exchange}]: sin datos para evaluar')
         return None
     alert_unix = alert_dt.timestamp()
     for i, ts in enumerate(k['time']):
@@ -127,11 +163,10 @@ def check_outcome(alert: dict):
         else:  # SHORT
             hit_tp = low  <= tp
             hit_sl = high >= sl
-        if hit_sl:
-            alert['ambiguous'] = hit_tp
-            return 'LOSS'
         if hit_tp:
             return 'WIN'
+        if hit_sl:
+            return 'LOSS'
     if hours_elapsed >= EVAL_HOURS:
         return 'TIMEOUT'
     return None
@@ -147,33 +182,26 @@ def generate_stats(records: list) -> str:
     timeouts = sum(1 for r in records if r['status'] == 'TIMEOUT')
     open_n   = sum(1 for r in records if r['status'] == 'OPEN')
     resolved = wins + losses
-    ambiguous_n = sum(1 for r in records if r.get('ambiguous'))
     wr = (wins / resolved * 100) if resolved > 0 else 0.0
     # --- Profit Factor y Expectancia -------------------------------------- #
     # Se calculan con los valores reales de TP/SL de cada alerta
     gross_profit = 0.0
     gross_loss = 0.0
-    net_pcts = []
     for r in records:
         entry = r.get('entry_price', 0)
         if entry <= 0:
             continue
         if r['status'] == 'WIN':
-            net = abs(r.get('tp', 0) - entry) / entry * 100 - COST_PCT
+            gross_profit += abs(r.get('tp', 0) - entry) / entry * 100
         elif r['status'] == 'LOSS':
-            net = -(abs(r.get('sl', 0) - entry) / entry * 100 + COST_PCT)
-        elif r['status'] == 'TIMEOUT':
-            net = -COST_PCT
-        else:
-            continue
-        net_pcts.append(net)
-        if net > 0:
-            gross_profit += net
-        else:
-            gross_loss += -net
+            gross_loss += abs(r.get('sl', 0) - entry) / entry * 100
     pf = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
-    # Expectancia sobre todos los trades cerrados, neta de costes (fees+funding+slippage)
-    exp = round(sum(net_pcts) / len(net_pcts), 2) if net_pcts else None
+    # Expectancia sobre TODOS los trades (TIMEOUT = 0, OPEN no cuenta)
+    closed = [r for r in records if r['status'] != 'OPEN']
+    if closed:
+        exp = round((gross_profit - gross_loss) / len(closed), 2)
+    else:
+        exp = None
     # --- Racha maxima de perdidas ----------------------------------------- #
     max_consec_loss = 0
     consec = 0
@@ -184,37 +212,27 @@ def generate_stats(records: list) -> str:
         elif r['status'] == 'WIN':
             consec = 0
     # --- Win rate por direccion ------------------------------------------- #
-    by_dir: dict = {}
-    for r in records:
-        if r['status'] not in ('WIN', 'LOSS'):
-            continue
-        d = r['direction']
-        if d not in by_dir:
-            by_dir[d] = {'wins': 0, 'total': 0}
-        by_dir[d]['total'] += 1
-        if r['status'] == 'WIN':
-            by_dir[d]['wins'] += 1
-    # --- Win rate por nivel ----------------------------------------------- #
-    by_level: dict = {}
-    for r in records:
-        if r['status'] not in ('WIN', 'LOSS'):
-            continue
-        lvl = r.get('lvl1_name', 'Desconocido')
-        if lvl not in by_level:
-            by_level[lvl] = {'wins': 0, 'total': 0}
-        by_level[lvl]['total'] += 1
-        if r['status'] == 'WIN':
-            by_level[lvl]['wins'] += 1
-    # --- Heartbeat: ejecuciones del scanner en las ultimas 24h ------------ #
-    heartbeat_n = 0
-    try:
-        if HEARTBEAT_LOG.exists():
-            with open(HEARTBEAT_LOG, encoding='utf-8') as hf:
-                stamps = json.load(hf)
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-            heartbeat_n = sum(1 for s in stamps if datetime.fromisoformat(s) > cutoff)
-    except Exception:
-        heartbeat_n = 0
+    def wr_by(records, keyfn, label):
+        groups: dict = {}
+        for r in records:
+            if r['status'] not in ('WIN', 'LOSS'):
+                continue
+            k = keyfn(r)
+            if k is None:
+                continue
+            if k not in groups:
+                groups[k] = {'wins': 0, 'total': 0}
+            groups[k]['total'] += 1
+            if r['status'] == 'WIN':
+                groups[k]['wins'] += 1
+        if not groups:
+            return []
+        lines = [f'{label}:']
+        for k, st in sorted(groups.items(), key=lambda x: -x[1]['total']):
+            gwr = st['wins'] / st['total'] * 100
+            lines.append(f'  {k}: {gwr:.0f}% ({st["wins"]}/{st["total"]})')
+        lines.append('')
+        return lines
     # --- Mensaje ---------------------------------------------------------- #
     lines = [
         '📊 <b>TFZ Scanner — Resultados acumulados</b>\n',
@@ -222,7 +240,6 @@ def generate_stats(records: list) -> str:
         (f'✅ Ganadas: {wins}  ❌ Perdidas: {losses}  '
          f'⏱ Timeout: {timeouts}  🟡 Abiertas: {open_n}'),
         f'<b>Win rate: {wr:.0f}%</b> ({wins}/{resolved} resueltas)\n',
-        f'✅ Scanner vivo: {heartbeat_n} ejecuciones en las ultimas 24h',
     ]
     # PF y Expectancia
     if pf is not None:
@@ -232,23 +249,14 @@ def generate_stats(records: list) -> str:
         lines.append(f'Expectancia: <b>{exp:+.2f}%</b> por trade cerrado')
     if max_consec_loss > 0:
         lines.append(f'Racha max de perdidas: {max_consec_loss} seguidas')
-    if ambiguous_n > 0:
-        lines.append(f'Velas ambiguas (TP y SL misma vela): {ambiguous_n} (resuelto SL primero)')
     lines.append('')
-    # Por direccion
-    if by_dir:
-        lines.append('Por direccion:')
-        for d, st in sorted(by_dir.items()):
-            dwr = st['wins'] / st['total'] * 100
-            lines.append(f'  {d}: {dwr:.0f}% ({st["wins"]}/{st["total"]})')
-        lines.append('')
-    # Por nivel
-    if by_level:
-        lines.append('Por nivel:')
-        for lvl, st in sorted(by_level.items(), key=lambda x: -x[1]['total']):
-            lvl_wr = st['wins'] / st['total'] * 100
-            lines.append(f'  {lvl}: {lvl_wr:.0f}% ({st["wins"]}/{st["total"]})')
-        lines.append('')
+    lines += wr_by(records, lambda r: r['direction'], 'Por direccion')
+    lines += wr_by(records, lambda r: r.get('formation'), 'Por formacion')
+    lines += wr_by(records, lambda r: r.get('exchange', 'MEXC'), 'Por exchange')
+    lines += wr_by(records,
+                   lambda r: 'Setup 80%' if r.get('setup80') else 'Normal',
+                   'Por calidad de setup')
+    lines += wr_by(records, lambda r: r.get('l1_tf', r.get('lvl1_name')), 'Por nivel')
     # Ultimos 5 resultados resueltos
     recent = sorted(
         [r for r in records if r['status'] != 'OPEN'],
@@ -260,18 +268,8 @@ def generate_stats(records: list) -> str:
         for r in recent:
             icon = {'WIN': '✅', 'LOSS': '❌', 'TIMEOUT': '⏱'}.get(r['status'], '?')
             ts   = r['timestamp'][:16].replace('T', ' ')
-            entry_p = r.get('entry_price', 0) or 0
-            tp_p    = r.get('tp', 0) or 0
-            sl_p    = r.get('sl', 0) or 0
-            dirn    = r.get('direction', 'LONG')
-            if r['status'] == 'WIN' and entry_p and tp_p:
-                _pnl = (tp_p - entry_p) / entry_p * 100 if dirn == 'LONG' else (entry_p - tp_p) / entry_p * 100
-                chg_str = f'+{_pnl:.1f}%'
-            elif r['status'] == 'LOSS' and entry_p and sl_p:
-                _pnl = (sl_p - entry_p) / entry_p * 100 if dirn == 'LONG' else (entry_p - sl_p) / entry_p * 100
-                chg_str = f'{_pnl:.1f}%'
-            else:
-                chg_str = 'timeout'
+            chg  = r.get('change_pct', 0) or 0
+            chg_str = f'+{chg:.1f}%' if chg > 0 else f'{chg:.1f}%'
             lines.append(
                 f'  {icon} {r["symbol"]} {r["direction"]} '
                 f'({chg_str}) — {ts}'
@@ -281,7 +279,7 @@ def generate_stats(records: list) -> str:
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
-    log.info('=== TFZ Checker iniciado ===')
+    log.info('=== TFZ Checker v2 iniciado ===')
     if not ALERTS_LOG.exists():
         log.info('No hay alerts_log.json — nada que comprobar')
         return
@@ -312,6 +310,6 @@ def main():
         log.info(f'{updated} alertas actualizadas en el log')
     stats_msg = generate_stats(records)
     send_telegram(stats_msg)
-    log.info('=== TFZ Checker completado ===')
+    log.info('=== TFZ Checker v2 completado ===')
 if __name__ == '__main__':
     main()
