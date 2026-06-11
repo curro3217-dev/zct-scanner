@@ -40,5 +40,8 @@ jobs:
           git add alerts_log.json
           git diff --cached --quiet && echo "Sin cambios en el log" && exit 0
           git commit -m "chore: checker actualiza resultados [skip ci]"
-          git pull --rebase origin main
-          git push
+          for attempt in 1 2 3; do
+            git pull --rebase origin main && git push && break
+            echo "Push fallo (intento $attempt), reintentando..."
+            sleep 5
+          done
