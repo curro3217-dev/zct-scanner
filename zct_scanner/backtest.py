@@ -14,6 +14,7 @@ Uso: python backtest.py
 Requiere: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID. Opcional: COINGECKO_API_KEY.
 """
 import os
+import json
 import time
 import csv
 import logging
@@ -55,6 +56,10 @@ CHANGE_LB        = 96           # 96 velas de 15m = 24h
 OUTCOME_CANDLES  = 32           # 8h de ventana (igual que checker.py)
 COOLDOWN_CANDLES = 8            # 2h entre setups del mismo symbol+side
 BREAKEVEN_WR     = 27.3         # con RR 1:2.67 necesitas > 27.3% de aciertos
+COST_PCT = 0.10  # coste ida y vuelta estimado: fees + funding + slippage (puntos %)
+NET_TP_PCT = TP_PCT * 100 - COST_PCT
+NET_SL_PCT = SL_PCT * 100 + COST_PCT
+BREAKEVEN_WR_NET = NET_SL_PCT / (NET_TP_PCT + NET_SL_PCT) * 100
 INTERVAL_MAP = {"15m": "Min15", "1h": "Min60", "4h": "Hour4", "1d": "Day1"}
 BASE = "https://contract.mexc.com/api/v1/contract"
 MAX_COINS = int(float(os.environ.get("MAX_COINS", 150)))   # aumentado de 80 a 150
@@ -208,32 +213,34 @@ def breakout_at_last(candles, side, nearest_level):
 def simulate(direction, entry, tp, sl, future_highs, future_lows, future_closes=None):
     """
     Simula el resultado de un trade.
-    Devuelve (outcome, max_float_pct, final_pct):
+    Devuelve (outcome, max_float_pct, final_pct, ambiguous):
       - outcome: 'WIN', 'LOSS' o 'TIMEOUT'
       - max_float_pct: beneficio flotante maximo durante la ventana (%)
       - final_pct: P&L% al cerrar la ventana (solo util en TIMEOUT; None si WIN/LOSS)
+      - ambiguous: True si TP y SL se tocaron en la misma vela (se resuelve SL
+        primero, conservador)
     """
     max_float = 0.0
     for high, low in zip(future_highs, future_lows):
         if direction == "LONG":
             max_float = max(max_float, (high - entry) / entry * 100)
-            if high >= tp:
-                return "WIN", round(max_float, 2), None
-            if low <= sl:
-                return "LOSS", round(max_float, 2), None
+            hit_tp = high >= tp
+            hit_sl = low <= sl
         else:
             max_float = max(max_float, (entry - low) / entry * 100)
-            if low <= tp:
-                return "WIN", round(max_float, 2), None
-            if high >= sl:
-                return "LOSS", round(max_float, 2), None
+            hit_tp = low <= tp
+            hit_sl = high >= sl
+        if hit_sl:
+            return "LOSS", round(max_float, 2), None, hit_tp
+        if hit_tp:
+            return "WIN", round(max_float, 2), None, False
     # TIMEOUT: calcula P&L al cierre de la ventana si tenemos closes
     final = None
     if future_closes:
         lc = future_closes[-1]
         final = round(((lc - entry) / entry if direction == "LONG"
                        else (entry - lc) / entry) * 100, 2)
-    return "TIMEOUT", round(max_float, 2), final
+    return "TIMEOUT", round(max_float, 2), final, False
 # ══════════════════════════════════════════════════════════
 #  BACKTEST POR MONEDA
 # ══════════════════════════════════════════════════════════
@@ -312,16 +319,16 @@ def backtest_coin(symbol):
         tp1 = nearest
         sl_dist = abs(price - sl_tfz) / price * 100.0
         # --- 3 salidas principales ----------------------------------------- #
-        outcome, max_float, final_pct = simulate(side, price, tp2, sl_fix, fh, fl, fc)
-        outcome_tp1, _, _ = simulate(side, price, tp1, sl_fix, fh, fl, fc)
-        outcome_tfz, _, _ = simulate(side, price, tp1, sl_tfz, fh, fl, fc)
+        outcome, max_float, final_pct, ambiguous = simulate(side, price, tp2, sl_fix, fh, fl, fc)
+        outcome_tp1, _, _, _ = simulate(side, price, tp1, sl_fix, fh, fl, fc)
+        outcome_tfz, _, _, _ = simulate(side, price, tp1, sl_tfz, fh, fl, fc)
         # --- grid search: todas las combinaciones SL x TP ------------------ #
         grid = {}
         for sl_g in SL_GRID:
             for tp_g in TP_GRID:
                 sl_p = price * (1 + sl_g) if side == "SHORT" else price * (1 - sl_g)
                 tp_p = price * (1 - tp_g) if side == "SHORT" else price * (1 + tp_g)
-                g_out, _, _ = simulate(side, price, tp_p, sl_p, fh, fl, fc)
+                g_out, _, _, _ = simulate(side, price, tp_p, sl_p, fh, fl, fc)
                 grid[f"{sl_g*100:.1f}x{tp_g*100:.0f}"] = g_out
         last_signal[side] = idx
         ts = (datetime.utcfromtimestamp(d15["time"][idx]).strftime("%m-%d %H:%M")
@@ -340,6 +347,7 @@ def backtest_coin(symbol):
             "outcome_tfz": outcome_tfz,
             "max_float_pct": max_float,
             "final_pct": final_pct,
+            "ambiguous": ambiguous,
         }
         row.update({f"grid_{k}": v for k, v in grid.items()})
         results.append(row)
@@ -368,7 +376,7 @@ def _expectancy(rows, key, win_gain_pct, loss_pct=None):
                 tot += -SL_PCT * 100
             else:
                 tot += -(loss_pct(r) if callable(loss_pct) else loss_pct)
-    return tot / len(rows)
+    return tot / len(rows) - COST_PCT
 def _profit_factor(rows, key="outcome", win_pct=None, loss_pct=None):
     """
     Profit Factor = ganancia bruta total / perdida bruta total.
@@ -380,10 +388,10 @@ def _profit_factor(rows, key="outcome", win_pct=None, loss_pct=None):
         o = r.get(key)
         if o == "WIN":
             g = (win_pct(r) if callable(win_pct) else win_pct) if win_pct else TP_PCT * 100
-            gross_win += g
+            gross_win += max(g - COST_PCT, 0.0)
         elif o == "LOSS":
             l = (loss_pct(r) if callable(loss_pct) else loss_pct) if loss_pct else SL_PCT * 100
-            gross_loss += l
+            gross_loss += l + COST_PCT
     return round(gross_win / gross_loss, 2) if gross_loss > 0 else float("inf")
 def _equity_drawdown(rows, key="outcome"):
     """
@@ -395,10 +403,13 @@ def _equity_drawdown(rows, key="outcome"):
     max_dd = 0.0
     for r in rows:
         o = r.get(key)
+        cost_factor = 1 - COST_PCT / 100
         if o == "WIN":
-            equity *= (1 + TP_PCT)
+            equity *= (1 + TP_PCT) * cost_factor
         elif o == "LOSS":
-            equity *= (1 - SL_PCT)
+            equity *= (1 - SL_PCT) * cost_factor
+        else:
+            equity *= cost_factor
         if equity > peak:
             peak = equity
         dd = (peak - equity) / peak
@@ -424,7 +435,7 @@ def _grid_analysis(rows):
         resolved_g = wins_g + losses_g
         wr_g = wins_g / resolved_g * 100 if resolved_g else 0
         # expectancia sobre todos los trades (TIMEOUT cuenta como 0)
-        exp_g = ((wins_g * tp_v * 100) - (losses_g * sl_v * 100)) / n_total
+        exp_g = ((wins_g * tp_v * 100) - (losses_g * sl_v * 100)) / n_total - COST_PCT
         summary[gk] = {
             "wr": round(wr_g, 0),
             "wins": wins_g,
@@ -458,6 +469,7 @@ def analyze(rows):
     wins = sum(1 for r in rows if r["outcome"] == "WIN")
     losses = sum(1 for r in rows if r["outcome"] == "LOSS")
     timeouts = sum(1 for r in rows if r["outcome"] == "TIMEOUT")
+    ambiguous_n = sum(1 for r in rows if r.get("ambiguous"))
     resolved = wins + losses
     wr = wins / resolved * 100 if resolved else 0.0
     # --- 3 salidas principales -------------------------------------------- #
@@ -517,6 +529,7 @@ def analyze(rows):
     return {
         "total": total, "wins": wins, "losses": losses, "timeouts": timeouts,
         "resolved": resolved, "wr": wr,
+        "ambiguous_n": ambiguous_n,
         "by_dir": by_dir, "by_gap": by_gap, "by_dist": by_dist,
         "wr_tp2_all": wr_tp2_all, "wr_tp1_all": wr_tp1_all, "wr_tfz_all": wr_tfz_all,
         "exp_tp2": exp_tp2, "exp_tp1": exp_tp1, "exp_tfz": exp_tfz,
@@ -547,15 +560,16 @@ def build_report(a, n_coins):
         body = "Sin setups en el periodo analizado."
     else:
         wr = a["wr"]
+        be = BREAKEVEN_WR_NET
         if a["resolved"] < 20:
             conclusion = (f"AVISO: solo {a['resolved']} operaciones resueltas — "
                           "muestra insuficiente para concluir.")
         elif wr >= 40:
-            conclusion = f"FUERTE: {wr:.0f}% de aciertos (breakeven en 25%)."
-        elif wr >= BREAKEVEN_WR:
-            conclusion = f"RENTABLE: {wr:.0f}% de aciertos, por encima del 25% de breakeven."
+            conclusion = f"FUERTE: {wr:.0f}% de aciertos (breakeven con costes en {be:.1f}%)."
+        elif wr >= be:
+            conclusion = f"RENTABLE: {wr:.0f}% de aciertos, por encima del {be:.1f}% de breakeven (con costes)."
         else:
-            conclusion = f"NO RENTABLE: {wr:.0f}% de aciertos, por debajo del 25% de breakeven."
+            conclusion = f"NO RENTABLE: {wr:.0f}% de aciertos, por debajo del {be:.1f}% de breakeven (con costes)."
         w2, n2, p2 = a["wr_tp2_all"]
         w1, n1, p1 = a["wr_tp1_all"]
         wz, nz, pz = a["wr_tfz_all"]
@@ -608,6 +622,9 @@ def build_report(a, n_coins):
             grid_section = grid_header + "\n" + "\n".join(grid_rows)
         else:
             grid_section = ""
+        ambiguous_pct = (a['ambiguous_n'] / a['total'] * 100) if a['total'] else 0
+        ambiguous_line = (f"Velas ambiguas (TP y SL en la misma vela 15m): {a['ambiguous_n']} "
+                          f"({ambiguous_pct:.0f}% del total) — resuelto SL primero")
         body_parts = [
             (f"Aciertos (+6%): {wr:.0f}% — {a['wins']} ganadas / {a['losses']} perdidas / "
              f"{a['resolved']} resueltas"),
@@ -617,6 +634,8 @@ def build_report(a, n_coins):
             comparacion,
             "",
             equity_line,
+            "",
+            ambiguous_line,
             "",
             dir_section,
             "",
@@ -632,7 +651,7 @@ def build_report(a, n_coins):
     parts_raw = [
         "📊 TFZ Backtest — Trading From Zero",
         f"Analizadas {n_coins} monedas en ~21 dias (velas de 15m)",
-        "Stop Loss 1.5% · Take Profit 4% · RR 1:2.67 · breakeven WR > 27%",
+        f"Stop Loss {SL_PCT*100:.1f}% · Take Profit {TP_PCT*100:.0f}% · coste estimado {COST_PCT:.1f}% · breakeven WR (con costes) > {BREAKEVEN_WR_NET:.1f}%",
         "",
         body,
         "",
@@ -680,6 +699,16 @@ def main():
              f"move24h>={MIN_MOVE_PCT}%  vol_global>=${MIN_VOLUME_GLOBAL/1e6:.0f}M  "
              f"max_coins={MAX_COINS}")
     coins = build_universe()
+    try:
+        hist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "universe_history.jsonl")
+        with open(hist_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "n_coins": len(coins),
+                "coins": coins,
+            }) + "\n")
+    except Exception as e:
+        log.error(f"No se pudo guardar universe_history: {e}")
     all_results = []
     for i, symbol in enumerate(coins):
         try:
