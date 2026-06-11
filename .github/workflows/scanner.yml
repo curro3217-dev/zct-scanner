@@ -25,11 +25,6 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Test conectividad Binance Spot
-        run: |
-          curl -sS -m 10 "https://data-api.binance.vision/api/v3/ticker/24hr" | head -c 300
-          echo
-
       - name: Loop de scans (cada minuto, 55 veces)
         env:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
