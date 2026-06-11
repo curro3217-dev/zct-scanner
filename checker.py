@@ -13,7 +13,7 @@ Como funciona:
   6. Envia a Telegram un resumen de todas las alertas (win rate, PF, etc).
 """
 import json, os, time, logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import requests
 log = logging.getLogger(__name__)
@@ -25,6 +25,8 @@ TELEGRAM_TOKEN   = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 ALERTS_LOG = Path(__file__).parent / 'alerts_log.json'
 EVAL_HOURS = 8   # ventana de evaluacion (igual que en el backtest)
+COST_PCT = 0.10  # coste ida y vuelta estimado: fees + funding + slippage (puntos %)
+HEARTBEAT_LOG = Path(__file__).parent / 'heartbeat.json'
 INTERVAL_MAP = {
     '1m': 'Min1', '15m': 'Min15', '1h': 'Min60',
     '4h': 'Hour4', '1d': 'Day1',
@@ -125,10 +127,11 @@ def check_outcome(alert: dict):
         else:  # SHORT
             hit_tp = low  <= tp
             hit_sl = high >= sl
+        if hit_sl:
+            alert['ambiguous'] = hit_tp
+            return 'LOSS'
         if hit_tp:
             return 'WIN'
-        if hit_sl:
-            return 'LOSS'
     if hours_elapsed >= EVAL_HOURS:
         return 'TIMEOUT'
     return None
@@ -144,26 +147,33 @@ def generate_stats(records: list) -> str:
     timeouts = sum(1 for r in records if r['status'] == 'TIMEOUT')
     open_n   = sum(1 for r in records if r['status'] == 'OPEN')
     resolved = wins + losses
+    ambiguous_n = sum(1 for r in records if r.get('ambiguous'))
     wr = (wins / resolved * 100) if resolved > 0 else 0.0
     # --- Profit Factor y Expectancia -------------------------------------- #
     # Se calculan con los valores reales de TP/SL de cada alerta
     gross_profit = 0.0
     gross_loss = 0.0
+    net_pcts = []
     for r in records:
         entry = r.get('entry_price', 0)
         if entry <= 0:
             continue
         if r['status'] == 'WIN':
-            gross_profit += abs(r.get('tp', 0) - entry) / entry * 100
+            net = abs(r.get('tp', 0) - entry) / entry * 100 - COST_PCT
         elif r['status'] == 'LOSS':
-            gross_loss += abs(r.get('sl', 0) - entry) / entry * 100
+            net = -(abs(r.get('sl', 0) - entry) / entry * 100 + COST_PCT)
+        elif r['status'] == 'TIMEOUT':
+            net = -COST_PCT
+        else:
+            continue
+        net_pcts.append(net)
+        if net > 0:
+            gross_profit += net
+        else:
+            gross_loss += -net
     pf = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
-    # Expectancia sobre TODOS los trades (TIMEOUT = 0, OPEN no cuenta)
-    closed = [r for r in records if r['status'] != 'OPEN']
-    if closed:
-        exp = round((gross_profit - gross_loss) / len(closed), 2)
-    else:
-        exp = None
+    # Expectancia sobre todos los trades cerrados, neta de costes (fees+funding+slippage)
+    exp = round(sum(net_pcts) / len(net_pcts), 2) if net_pcts else None
     # --- Racha maxima de perdidas ----------------------------------------- #
     max_consec_loss = 0
     consec = 0
@@ -195,6 +205,16 @@ def generate_stats(records: list) -> str:
         by_level[lvl]['total'] += 1
         if r['status'] == 'WIN':
             by_level[lvl]['wins'] += 1
+    # --- Heartbeat: ejecuciones del scanner en las ultimas 24h ------------ #
+    heartbeat_n = 0
+    try:
+        if HEARTBEAT_LOG.exists():
+            with open(HEARTBEAT_LOG, encoding='utf-8') as hf:
+                stamps = json.load(hf)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            heartbeat_n = sum(1 for s in stamps if datetime.fromisoformat(s) > cutoff)
+    except Exception:
+        heartbeat_n = 0
     # --- Mensaje ---------------------------------------------------------- #
     lines = [
         '📊 <b>TFZ Scanner — Resultados acumulados</b>\n',
@@ -202,6 +222,7 @@ def generate_stats(records: list) -> str:
         (f'✅ Ganadas: {wins}  ❌ Perdidas: {losses}  '
          f'⏱ Timeout: {timeouts}  🟡 Abiertas: {open_n}'),
         f'<b>Win rate: {wr:.0f}%</b> ({wins}/{resolved} resueltas)\n',
+        f'✅ Scanner vivo: {heartbeat_n} ejecuciones en las ultimas 24h',
     ]
     # PF y Expectancia
     if pf is not None:
@@ -211,6 +232,8 @@ def generate_stats(records: list) -> str:
         lines.append(f'Expectancia: <b>{exp:+.2f}%</b> por trade cerrado')
     if max_consec_loss > 0:
         lines.append(f'Racha max de perdidas: {max_consec_loss} seguidas')
+    if ambiguous_n > 0:
+        lines.append(f'Velas ambiguas (TP y SL misma vela): {ambiguous_n} (resuelto SL primero)')
     lines.append('')
     # Por direccion
     if by_dir:
