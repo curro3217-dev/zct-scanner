@@ -122,6 +122,11 @@ BYBIT_IV = {"Min5":"5", "Min15":"15", "Hour1":"60", "Hour4":"240"}
 # interceptan TLS. NUNCA activarlo en GitHub Actions.
 _SSL_CTX = ssl._create_unverified_context() if _envb("INSECURE_SSL") else None
 
+def _blocked(url, code):
+    host = url.split("/")[2]
+    print(f"[INFO] {host} bloquea esta IP (HTTP {code}) — tipico en servidores de "
+          f"GitHub Actions (EEUU). Se continua sin esta fuente.")
+
 def _get(url, retries=3, timeout=15):
     last = None
     for i in range(retries):
@@ -129,6 +134,10 @@ def _get(url, retries=3, timeout=15):
             req = urlrequest.Request(url, headers={"User-Agent":"tfz-scanner/2.0"})
             with urlrequest.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
                 return json.loads(r.read().decode())
+        except urlerror.HTTPError as e:
+            if e.code in (403, 451):
+                _blocked(url, e.code); return None  # geo-bloqueo: no reintentar
+            last = e; time.sleep(1.0+i)
         except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as e:
             last = e; time.sleep(1.0+i)
     print(f"[WARN] GET fallo {url}: {last}"); return None
@@ -140,6 +149,10 @@ def _get_raw(url, retries=3, timeout=20):
             req = urlrequest.Request(url, headers={"User-Agent":"tfz-scanner/2.0"})
             with urlrequest.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
                 return json.loads(r.read().decode())
+        except urlerror.HTTPError as e:
+            if e.code in (403, 451):
+                _blocked(url, e.code); return None  # geo-bloqueo: no reintentar
+            last = e; time.sleep(1.5+i)
         except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as e:
             last = e; time.sleep(1.5+i)
     print(f"[WARN] GET raw fallo {url}: {last}"); return None
@@ -183,6 +196,9 @@ def get_global_market():
     spot = _parse_binance_24h(_get_raw(f"{BINANCE_SPOT_BASE}/api/v3/ticker/24hr"))
     fut  = _parse_binance_24h(_get_raw(f"{BINANCE_FUT_BASE}/fapi/v1/ticker/24hr"))
     if not spot and not fut: return {}
+    if spot and not fut:
+        print("[INFO] Binance Futures no disponible: el filtro usa SOLO volumen spot. "
+              "Las monedas que solo cotizan en futures de Binance quedan descartadas.")
     out = {}
     for base in set(spot) | set(fut):
         s = spot.get(base); f = fut.get(base)
