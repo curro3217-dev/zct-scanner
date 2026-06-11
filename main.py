@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TFZ-SCANNER — scanner intradia perpetuos USDT. Datos (tickers y klines): MEXC.
+TFZ-SCANNER — scanner intradia perpetuos USDT. Universo/ejecucion: MEXC. Filtro volumen/movimiento: Binance Spot (data-api.binance.vision).
 """
 import os, json, time, math, sys, datetime as dt
 
@@ -24,9 +24,10 @@ def _envb(name, default=False):
     return v.strip().lower() in ("1", "true", "yes", "si", "on")
 
 MEXC_BASE  = "https://contract.mexc.com/api/v1/contract"
+BINANCE_DATA = "https://data-api.binance.vision/api/v3/ticker/24hr"
 DIAG       = _envb("DIAG", True)
 
-MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 20_000_000)
+MIN_VOLUME_GLOBAL = _envf("MIN_VOLUME_GLOBAL", 100_000_000)
 MIN_MOVE_PCT = _envf("MIN_MOVE_PCT", 10.0)
 VERIFY_LOG = _envb("VERIFY_LOG", True)
 
@@ -111,6 +112,26 @@ def get_mexc_tickers():
     if not d or not d.get("success"): return []
     return d.get("data",[])
 
+# ---- Binance Spot (volumen/movimiento) ------------------------------------ #
+def get_binance_tickers():
+    """
+    Devuelve dict {BASE: {"vol": quoteVolume, "chg": priceChangePercent}} con
+    datos spot de Binance (data-api.binance.vision, sin proxy). None si falla.
+    """
+    d = _get(BINANCE_DATA)
+    if not d or not isinstance(d, list): return None
+    out = {}
+    for t in d:
+        sym = t.get("symbol","")
+        if not sym.endswith("USDT"): continue
+        base = sym[:-4]
+        try:
+            vol = float(t.get("quoteVolume") or 0)
+            chg = float(t.get("priceChangePercent") or 0)
+        except (ValueError, TypeError): continue
+        out[base] = {"vol": vol, "chg": chg}
+    return out
+
 # ---- Klines --------------------------------------------------------------- #
 def get_mexc_klines(symbol, interval, limit=200):
     d = _get(f"{MEXC_BASE}/kline/{symbol}?interval={interval}&limit={limit}")
@@ -132,20 +153,27 @@ def get_klines(symbol, interval, limit=200, exchange="MEXC"):
     return get_mexc_klines(symbol, interval, limit)
 
 # ---- Seleccion de monedas ------------------------------------------------- #
-def select_candidates(mexc_tickers):
+def select_candidates(mexc_tickers, binance):
     """
-    Filtra el universo MEXC por volumen y movimiento 24h (datos propios de MEXC,
-    sin dependencias externas). Devuelve lista de (symbol, side, info, exchange).
+    Cruza el universo MEXC (simbolos/precios) con el volumen y movimiento 24h
+    de Binance Spot (data-api.binance.vision). Si Binance no responde, no hay
+    candidatos en este scan (se evita operar con datos de volumen obsoletos).
+    Devuelve lista de (symbol, side, info, exchange).
     """
     out = []
+    if binance is None:
+        print("[WARN] Binance Spot (data-api.binance.vision) no disponible: 0 candidatos en este scan")
+        return out
     for tk in mexc_tickers:
         sym = tk.get("symbol","")
         if not sym.endswith("_USDT"): continue
         base = sym.split("_")[0]
         if base in STABLES: continue
+        b = binance.get(base)
+        if not b: continue
+        vol = b["vol"]
+        ch24 = b["chg"]
         try:
-            vol = float(tk.get("amount24") or 0)
-            ch24 = float(tk.get("riseFallRate") or 0) * 100
             price = float(tk.get("lastPrice") or 0)
         except (ValueError, TypeError): continue
         if vol < MIN_VOLUME_GLOBAL: continue
@@ -153,7 +181,7 @@ def select_candidates(mexc_tickers):
         elif ch24 <= -MIN_MOVE_PCT: side = "SHORT"
         else: continue
         if VERIFY_LOG:
-            print(f"[FUENTE:MEXC] {sym}: {price:g} ch24={ch24:+.1f}% vol=${vol/1e6:.0f}M -> {side}")
+            print(f"[FUENTE:BINANCE-SPOT] {sym}: {price:g} ch24={ch24:+.1f}% vol=${vol/1e6:.0f}M -> {side}")
         out.append((sym, side,
                      {"last":price,"vol_global":vol,
                       "ch24":round(ch24,2),"ch7":0.0,"base":base},
@@ -468,9 +496,10 @@ def main():
     record_heartbeat()
 
     mexc_tickers = get_mexc_tickers()
-    print(f"Tickers: MEXC={len(mexc_tickers)}")
+    binance = get_binance_tickers()
+    print(f"Tickers: MEXC={len(mexc_tickers)} | Binance-spot={'OK' if binance is not None else 'FAIL'}")
 
-    candidates = select_candidates(mexc_tickers)
+    candidates = select_candidates(mexc_tickers, binance)
     print(f"Candidatos tras seleccion: {len(candidates)}")
 
     log = load_log(); new_alerts = 0
